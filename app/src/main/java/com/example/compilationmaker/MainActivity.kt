@@ -7,6 +7,7 @@ import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaMetadataRetriever
@@ -24,6 +25,7 @@ import android.text.format.DateFormat
 import android.text.Editable
 import android.text.TextWatcher
 import android.util.Log
+import android.util.Base64
 import android.view.View
 import android.view.MotionEvent
 import android.widget.ArrayAdapter
@@ -86,6 +88,10 @@ class MainActivity : AppCompatActivity() {
     private var roiStartWPercent = 0f
     private var roiStartHPercent = 0f
     private var isUpdatingRoiFields = false
+    private var selectedVideoRotationDegrees = 0
+    private var selectedVideoWidth = 0
+    private var selectedVideoHeight = 0
+    private val roiPrefs by lazy { getSharedPreferences("roi_prefs", MODE_PRIVATE) }
     private val roiCornerHitPx = 28f
 
     private val permissionRequestLauncher =
@@ -121,6 +127,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun onVideoSelected(picked: Uri) {
         selectedVideoUri = picked
+        loadSelectedVideoMetadata(picked)
+        restoreRoiState(picked)
         binding.selectedVideo.text = picked.toString()
         emitProgress("Video selected: ${picked.toString().take(60)}", 2)
         setupVideoPreview(picked)
@@ -441,6 +449,7 @@ class MainActivity : AppCompatActivity() {
                     scanProfile.frameStepMs,
                     scanProfile.mode,
                     scanWindow,
+                    selectedVideoRotationDegrees,
                     scanProfile.label
                 ) { message, percent ->
                     emitProgress(message, percent)
@@ -522,9 +531,19 @@ class MainActivity : AppCompatActivity() {
             emitProgress("Capturing frame for ROI at ${safePosition}ms", 5)
             val frame = withContext(Dispatchers.IO) {
                 val retriever = MediaMetadataRetriever()
+                val targetWidth = max(640, frameImage.width).coerceAtMost(1280)
+                val targetHeight = max(360, frameImage.height).coerceAtMost(720)
                 try {
                     retriever.setDataSource(this@MainActivity, source)
-                    retriever.getFrameAtTime(safePosition * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    retriever.getScaledFrameAtTime(
+                        safePosition * 1000L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                        targetWidth,
+                        targetHeight
+                    ) ?: retriever.getFrameAtTime(
+                        safePosition * 1000L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                    )
                 } finally {
                     retriever.release()
                 }
@@ -533,9 +552,13 @@ class MainActivity : AppCompatActivity() {
                 emitProgress("Unable to capture frame for ROI", 5)
                 return@launch
             }
+            val normalizedFrame = normalizeBitmapForRoi(frame, selectedVideoRotationDegrees)
+            if (normalizedFrame !== frame) {
+                frame.recycle()
+            }
             previewBitmap?.recycle()
-            previewBitmap = frame
-            frameImage.setImageBitmap(frame)
+            previewBitmap = normalizedFrame
+            frameImage.setImageBitmap(normalizedFrame)
             selectedPreviewMs = safePosition
             roiOverlay.visibility = View.VISIBLE
             updateRoiOverlay()
@@ -561,6 +584,7 @@ class MainActivity : AppCompatActivity() {
             "ROI set to X:${String.format(Locale.US, "%.1f", xPercent * 100f)}% Y:${String.format(Locale.US, "%.1f", yPercent * 100f)}% "
                 + "W:${String.format(Locale.US, "%.1f", widthPercent * 100f)}% H:${String.format(Locale.US, "%.1f", heightPercent * 100f)}%"
         )
+        persistCurrentRoi()
     }
 
     private fun wireScanAreaInputs() {
@@ -747,6 +771,120 @@ class MainActivity : AppCompatActivity() {
         statusFeedText.text = statusFeedLines.joinToString("\n")
         statusFeedScroll.post { statusFeedScroll.fullScroll(View.FOCUS_DOWN) }
     }
+
+    private fun roiStateKey(uri: Uri): String {
+        return "roi:${Base64.encodeToString(uri.toString().toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)}"
+    }
+
+    private fun persistCurrentRoi() {
+        val uri = selectedVideoUri ?: return
+        val window = readScanWindow()
+        roiPrefs.edit().putString(
+            roiStateKey(uri),
+            JSONObject().apply {
+                put("uri", uri.toString())
+                put("rotation", selectedVideoRotationDegrees)
+                put("videoWidth", selectedVideoWidth)
+                put("videoHeight", selectedVideoHeight)
+                put("xPercent", window.xPercent)
+                put("yPercent", window.yPercent)
+                put("widthPercent", window.widthPercent)
+                put("heightPercent", window.heightPercent)
+                put("updatedAtMs", System.currentTimeMillis())
+            }.toString()
+        ).apply()
+    }
+
+    private fun restoreRoiState(uri: Uri) {
+        val payload = roiPrefs.getString(roiStateKey(uri), null) ?: return
+        try {
+            val json = JSONObject(payload)
+            val savedWindow = ScanWindow(
+                (json.getDouble("xPercent")).toFloat(),
+                (json.getDouble("yPercent")).toFloat(),
+                (json.getDouble("widthPercent")).toFloat(),
+                (json.getDouble("heightPercent")).toFloat()
+            )
+            val savedRotation = json.optInt("rotation")
+            val restoredWindow = normalizeRoiWindowForCurrentRotation(savedWindow, savedRotation)
+            setScanAreaFromPercents(
+                restoredWindow.xPercent,
+                restoredWindow.yPercent,
+                restoredWindow.widthPercent,
+                restoredWindow.heightPercent
+            )
+            emitProgress(
+                "Loaded saved ROI for video (storedRotation=${savedRotation}°, currentRotation=${selectedVideoRotationDegrees}°)",
+                1
+            )
+        } catch (e: Exception) {
+            Log.w(logTag, "Failed to restore ROI metadata", e)
+            emitProgress("Saved ROI metadata was unavailable. Using defaults.", 1)
+        }
+    }
+
+    private fun normalizeRoiWindowForCurrentRotation(saved: ScanWindow, savedRotation: Int): ScanWindow {
+        val from = ((savedRotation % 360) + 360) % 360
+        val to = ((selectedVideoRotationDegrees % 360) + 360) % 360
+        return when ((to - from + 360) % 360) {
+            90 -> ScanWindow(
+                saved.yPercent,
+                1f - saved.xPercent - saved.widthPercent,
+                saved.heightPercent,
+                saved.widthPercent
+            )
+            180 -> ScanWindow(
+                1f - saved.xPercent - saved.widthPercent,
+                1f - saved.yPercent - saved.heightPercent,
+                saved.widthPercent,
+                saved.heightPercent
+            )
+            270 -> ScanWindow(
+                1f - saved.yPercent - saved.heightPercent,
+                saved.xPercent,
+                saved.heightPercent,
+                saved.widthPercent
+            )
+            else -> saved
+        }.coerceInBounds()
+    }
+
+    private fun ScanWindow.coerceInBounds(): ScanWindow {
+        val x = xPercent.coerceIn(0f, 1f)
+        val y = yPercent.coerceIn(0f, 1f)
+        val w = widthPercent.coerceIn(0.01f, max(0.01f, 1f - x))
+        val h = heightPercent.coerceIn(0.01f, max(0.01f, 1f - y))
+        return ScanWindow(x, y, w, h)
+    }
+
+    private fun loadSelectedVideoMetadata(uri: Uri) {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(this, uri)
+            selectedVideoRotationDegrees = (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0).let {
+                ((it % 360) + 360) % 360
+            }
+            selectedVideoWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+            selectedVideoHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+        } catch (e: Exception) {
+            Log.w(logTag, "Could not read video metadata", e)
+            selectedVideoRotationDegrees = 0
+            selectedVideoWidth = 0
+            selectedVideoHeight = 0
+        } finally {
+            retriever.release()
+        }
+    }
+
+    private fun normalizeBitmapForRoi(source: Bitmap, rotationDegrees: Int): Bitmap {
+        return when (((rotationDegrees % 360) + 360) % 360) {
+            0 -> source
+            else -> {
+                val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
+                Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+            }
+        }
+    }
 }
 
 private class VideoCompilationEngine(private val context: MainActivity) {
@@ -761,6 +899,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         frameStepMs: Long,
         scanMode: ScanMode,
         scanWindow: ScanWindow,
+        sourceRotationDegrees: Int,
         scanProfileLabel: String,
         progress: (String, Int) -> Unit
     ): ScanFindResult = withContext(Dispatchers.IO) {
@@ -816,7 +955,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                 var didDetectChange = false
                 try {
                     val detected = try {
-                        val detection = detectCornerNumberWithTimings(frame, scanWindow)
+                        val detection = detectCornerNumberWithTimings(frame, scanWindow, sourceRotationDegrees)
                         timing.cropMs += detection.cropMs
                         timing.preprocessMs += detection.preprocessMs
                         timing.ocrMs += detection.ocrMs
@@ -958,13 +1097,21 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         }
     }
 
-    private suspend fun detectCornerNumberWithTimings(frame: Bitmap, scanWindow: ScanWindow): NumberDetectionResult {
+    private suspend fun detectCornerNumberWithTimings(
+        frame: Bitmap,
+        scanWindow: ScanWindow,
+        sourceRotationDegrees: Int
+    ): NumberDetectionResult {
+        val normalizedFrame = if (sourceRotationDegrees == 0) frame else normalizeBitmapForOcr(frame, sourceRotationDegrees)
         val startedCropMs = System.currentTimeMillis()
         val corner = try {
-            if (frame.width <= 0 || frame.height <= 0) return NumberDetectionResult(null, 0L, 0L, 0L)
-            cropToWindow(frame, scanWindow)
+            if (normalizedFrame.width <= 0 || normalizedFrame.height <= 0) return NumberDetectionResult(null, 0L, 0L, 0L)
+            cropToWindow(normalizedFrame, scanWindow)
         } catch (e: Exception) {
             Log.w(tag, "Failed to crop scan area", e)
+            if (normalizedFrame !== frame) {
+                normalizedFrame.recycle()
+            }
             return NumberDetectionResult(null, 0L, 0L, 0L)
         } ?: return NumberDetectionResult(null, 0L, 0L, 0L)
         val cropMs = System.currentTimeMillis() - startedCropMs
@@ -990,6 +1137,19 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                 scaled.recycle()
             }
             corner.recycle()
+            if (normalizedFrame !== frame) {
+                normalizedFrame.recycle()
+            }
+        }
+    }
+
+    private fun normalizeBitmapForOcr(source: Bitmap, rotationDegrees: Int): Bitmap {
+        return when (((rotationDegrees % 360) + 360) % 360) {
+            0 -> source
+            else -> {
+                val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
+                Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+            }
         }
     }
 
