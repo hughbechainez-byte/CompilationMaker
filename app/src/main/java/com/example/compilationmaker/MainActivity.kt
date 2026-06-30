@@ -965,18 +965,45 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                         null
                     }
 
+                    var nextNumber = detected
                     didDetectChange = detected != null && previousNumber != null && detected != previousNumber
-                    if (detected != null && previousNumber != null && detected != previousNumber) {
+                    if (didDetectChange) {
                         transitions.add(cursorMs)
                         val cutStartMs = max(0L, cursorMs - 10_000L)
                         val cutEndMs = min(durationMs, cursorMs + 30_000L)
+                        nextNumber = detected
                         progress(
                             "Transition at ${formatMs(cursorMs)}; cut ${formatMs(cutStartMs)} -> ${formatMs(cutEndMs)}",
                             min(100, ((cursorMs.toFloat() / durationMs.toFloat()) * 100f + 1).toInt())
                         )
                     }
-                    if (detected != null) {
-                        previousNumber = detected
+
+                    if (scanMode == ScanMode.Checkpoints3Min && previousNumber != null && !didDetectChange) {
+                        val probeResult = scanCheckpointWindowForTransitions(
+                            retriever,
+                            cursorMs,
+                            frameStepMs,
+                            scanWindow,
+                            sourceRotationDegrees,
+                            previousNumber,
+                            durationMs,
+                            timing
+                        )
+                        if (probeResult != null) {
+                            val (probeTransitionMs, probeDetectedNumber) = probeResult
+                            transitions.add(probeTransitionMs)
+                            val cutStartMs = max(0L, probeTransitionMs - 10_000L)
+                            val cutEndMs = min(durationMs, probeTransitionMs + 30_000L)
+                            nextNumber = probeDetectedNumber
+                            progress(
+                                "Checkpoint refine hit transition at ${formatMs(probeTransitionMs)}; cut ${formatMs(cutStartMs)} -> ${formatMs(cutEndMs)}",
+                                min(100, ((probeTransitionMs.toFloat() / durationMs.toFloat()) * 100f + 1).toInt())
+                            )
+                            didDetectChange = true
+                        }
+                    }
+                    if (nextNumber != null) {
+                        previousNumber = nextNumber
                     }
                 } finally {
                     frame.recycle()
@@ -1031,6 +1058,49 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             recognizer.close()
             retriever.release()
         }
+    }
+
+    private suspend fun scanCheckpointWindowForTransitions(
+        retriever: MediaMetadataRetriever,
+        centerMs: Long,
+        checkpointMs: Long,
+        scanWindow: ScanWindow,
+        sourceRotationDegrees: Int,
+        previousNumber: Int,
+        durationMs: Long,
+        timing: ScanTimingSummary
+    ): Pair<Long, Int>? {
+        if (checkpointMs <= 0L) return null
+        val halfWindowMs = max(1_000L, checkpointMs / 2L)
+        val localStepMs = 1_000L
+        val startMs = max(0L, centerMs - halfWindowMs)
+        val endMs = min(durationMs, centerMs + halfWindowMs)
+        var localCursorMs = startMs
+        while (localCursorMs <= endMs) {
+            var localFrame: Bitmap?
+            val decodeMs = measureTimeMillis {
+                localFrame = retriever.getFrameAtTime(localCursorMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            }
+            timing.decodeMs += decodeMs
+            val frame = localFrame ?: run {
+                localCursorMs += localStepMs
+                continue
+            }
+            try {
+                val detection = detectCornerNumberWithTimings(frame, scanWindow, sourceRotationDegrees)
+                timing.cropMs += detection.cropMs
+                timing.preprocessMs += detection.preprocessMs
+                timing.ocrMs += detection.ocrMs
+                val detected = detection.value
+                if (detected != null && detected != previousNumber) {
+                    return Pair(localCursorMs, detected)
+                }
+            } finally {
+                frame.recycle()
+            }
+            localCursorMs += localStepMs
+        }
+        return null
     }
 
     suspend fun getDurationMs(sourceUri: Uri): Long = withContext(Dispatchers.IO) {
