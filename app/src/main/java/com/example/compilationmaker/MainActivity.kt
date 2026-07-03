@@ -2,8 +2,12 @@ package com.example.compilationmaker
 
 import android.Manifest
 import android.app.Activity
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ContentResolver
 import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -20,6 +24,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.text.format.DateFormat
 import android.text.Editable
@@ -44,6 +49,8 @@ import android.widget.VideoView
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
@@ -57,9 +64,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
-import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.util.ArrayDeque
 import java.util.Locale
@@ -79,6 +84,10 @@ class MainActivity : AppCompatActivity() {
     private val logTag = "CompilationMaker"
     private val previewHandler = Handler(Looper.getMainLooper())
     private var selectedPreviewMs = 0
+    private var lastProgressText = ""
+    private var lastProgressPercent = -1
+    private var lastProgressUpdateMs = 0L
+    private var notificationChannelReady = false
     private var previewBitmap: Bitmap? = null
     private var roiTouchMode = RoiTouchMode.NONE
     private var roiTouchStartX = 0f
@@ -174,6 +183,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progressPercentText: TextView
     private lateinit var statusFeedText: TextView
     private lateinit var statusFeedScroll: ScrollView
+    private lateinit var checkUpdatesButton: Button
 
     private val qualityOptions = arrayOf(ExportQuality.Low, ExportQuality.Medium, ExportQuality.High)
     private val formatOptions = arrayOf(ExportFormat.Mp4, ExportFormat.Webm, ExportFormat.Mov)
@@ -187,6 +197,16 @@ class MainActivity : AppCompatActivity() {
         ScanProfile("5-minute checkpoints", 300_000L, ScanMode.Checkpoints3Min)
     )
     private val defaultScanWindow = ScanWindow(0.0f, 0.8f, 0.10f, 0.30f)
+    private val progressNotificationChannelId = "compilation_progress"
+    private val progressNotificationId = 6106
+    private val updateNotificationChannelId = "compilation_updates"
+    private val updateNotificationId = 6110
+    private val updateManifestBlobEndpoint =
+        "https://api.github.com/repos/hughbechainez-byte/CompilationMaker/contents/app-update.json"
+    private val fallbackReleaseEndpoint =
+        "https://api.github.com/repos/hughbechainez-byte/CompilationMaker/releases/latest"
+    private val updateCooldownMs = 12L * 60L * 60L * 1000L
+    private val updatePrefs by lazy { getSharedPreferences("update_prefs", MODE_PRIVATE) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -194,7 +214,10 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         setUpUi()
+        ensureProgressNotificationChannel()
+        ensureUpdateNotificationChannel()
         requestPermissionsIfNeeded()
+        checkForUpdates()
     }
 
     override fun onPause() {
@@ -228,6 +251,7 @@ class MainActivity : AppCompatActivity() {
         progressPercentText = binding.progressPercentText
         statusFeedText = binding.statusFeedText
         statusFeedScroll = binding.statusFeedScroll
+        checkUpdatesButton = binding.checkUpdatesButton
         roiOverlay.isClickable = false
         roiOverlay.isFocusable = false
         val mediaController = MediaController(this)
@@ -386,6 +410,9 @@ class MainActivity : AppCompatActivity() {
             val format = formatOptions[formatSpinner.selectedItemPosition]
             runCompilation(source, quality, format)
         }
+        checkUpdatesButton.setOnClickListener {
+            checkForUpdates(force = true)
+        }
 
         qualitySpinner.adapter = ArrayAdapter(
             this,
@@ -403,7 +430,7 @@ class MainActivity : AppCompatActivity() {
             android.R.layout.simple_spinner_item,
             scanProfiles.map { it.label },
         )
-        scanSpeedSpinner.setSelection(0, false)
+        scanSpeedSpinner.setSelection(4, false)
         setScanAreaFromPercents(
             defaultScanWindow.xPercent,
             defaultScanWindow.yPercent,
@@ -420,6 +447,7 @@ class MainActivity : AppCompatActivity() {
         val needed = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             needed += Manifest.permission.READ_MEDIA_VIDEO
+            needed += Manifest.permission.POST_NOTIFICATIONS
         } else {
             needed += Manifest.permission.READ_EXTERNAL_STORAGE
         }
@@ -452,17 +480,17 @@ class MainActivity : AppCompatActivity() {
                     selectedVideoRotationDegrees,
                     scanProfile.label
                 ) { message, percent ->
-                    emitProgress(message, percent)
+                    emitProgress(message, (percent * 50 / 100).coerceIn(0, 50))
                 }
                 timingBuckets["scan"] = scanResult.timing.totalMs()
                 emitProgress(
                     "Scan timing (ms): decode=${scanResult.timing.decodeMs} crop=${scanResult.timing.cropMs} preprocess=${scanResult.timing.preprocessMs} ocr=${scanResult.timing.ocrMs} merge=${scanResult.timing.mergeMs}",
-                    15
+                    51
                 )
 
                 val windows = scanResult.segments.toMutableList()
                 if (windows.isEmpty()) {
-                    emitProgress("No number transitions found. Falling back to a short full-video clip.", 45)
+                    emitProgress("No number transitions found. Falling back to a short full-video clip.", 52)
                     val durationMs = engine.getDurationMs(uri)
                     if (durationMs <= 0L) {
                         emitProgress("Unable to read source duration.", 100)
@@ -471,8 +499,13 @@ class MainActivity : AppCompatActivity() {
                     windows.clear()
                     windows.add(SegmentWindow(0L, min(durationMs, 30_000L)))
                 }
+                val clipWindowMs = windows.sumOf { it.endMs - it.startMs }.coerceAtLeast(1L)
+                emitProgress(
+                    "Scan complete: ${windows.size} segments, combined duration ${formatDurationMs(clipWindowMs)}",
+                    54
+                )
 
-                emitProgress("Trimming and concatenating ${windows.size} segments...", 55)
+                emitProgress("Preparing ${windows.size} trim/copy segments (${formatDurationMs(clipWindowMs)} source span)...", 55)
                 var compiledOutput: File? = null
                 val exportTiming = measureTimeMillis {
                     compiledOutput = engine.renderCompilation(uri, windows, quality, format) { message, percent ->
@@ -487,12 +520,12 @@ class MainActivity : AppCompatActivity() {
                     emitProgress("Saved: $saved", 100)
                 }
                 timingBuckets["save"] = saveTiming
-                emitProgress("Export timing (ms): export=$exportTiming save=$saveTiming", 90)
+                emitProgress("Export timing (ms): export=$exportTiming save=$saveTiming", 100)
                 emitProgress(
                     "Performance summary: scan=${timingBuckets["scan"]}ms export=${timingBuckets["export"]}ms save=${timingBuckets["save"]}ms",
-                    95
+                    100
                 )
-                emitProgress("Scan report stored: ${engine.latestScanReportPath}", 96)
+                emitProgress("Scan report stored: ${engine.latestScanReportPath}", 100)
                 Toast.makeText(this@MainActivity, "Export complete", Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
                 if (e !is CancellationException) {
@@ -662,19 +695,44 @@ class MainActivity : AppCompatActivity() {
         }
 
         val resolver: ContentResolver = contentResolver
+        fun copyWithProgress(input: java.io.InputStream, out: java.io.OutputStream) {
+            val buffer = ByteArray(256 * 1024)
+            var bytes = 0L
+            var read: Int
+            val sourceLength = file.length().coerceAtLeast(1L)
+            var lastReportMs = 0L
+            while (true) {
+                read = input.read(buffer)
+                if (read == -1) break
+                out.write(buffer, 0, read)
+                bytes += read
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastReportMs >= 300L) {
+                    val savedPercent = ((bytes * 100L) / sourceLength).coerceIn(0L, 100L).toInt()
+                    emitProgress("Saving output: ${formatBytes(bytes)} / ${formatBytes(sourceLength)} ($savedPercent%)", 95 + savedPercent / 20)
+                    lastReportMs = now
+                }
+            }
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
             val uri = resolver.insert(collection, values)
             if (uri != null) {
-                resolver.openOutputStream(uri, "w").use { out ->
-                    file.inputStream().use { input ->
-                        input.copyTo(out ?: throw IllegalStateException("No output stream"))
+                try {
+                    resolver.openOutputStream(uri, "w").use { out ->
+                        file.inputStream().use { input ->
+                            copyWithProgress(input, out ?: throw IllegalStateException("No output stream"))
+                        }
                     }
+                    values.clear()
+                    values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                    resolver.update(uri, values, null, null)
+                    return@withContext uri.toString()
+                } catch (e: Exception) {
+                    runCatching { resolver.delete(uri, null, null) }
+                    throw e
                 }
-                values.clear()
-                values.put(MediaStore.Video.Media.IS_PENDING, 0)
-                resolver.update(uri, values, null, null)
-                return@withContext uri.toString()
             }
         }
 
@@ -684,7 +742,7 @@ class MainActivity : AppCompatActivity() {
         runCatching {
             file.inputStream().use { input ->
                 outFile.outputStream().use { out ->
-                    input.copyTo(out)
+                    copyWithProgress(input, out)
                 }
             }
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
@@ -701,7 +759,7 @@ class MainActivity : AppCompatActivity() {
         val privateOut = File(privateDir, "$filename.${safeFormat.extension}")
         privateOut.outputStream().use { out ->
             file.inputStream().use { input ->
-                input.copyTo(out)
+                copyWithProgress(input, out)
             }
         }
         return@withContext privateOut.absolutePath
@@ -719,11 +777,105 @@ class MainActivity : AppCompatActivity() {
 
     private fun emitProgress(message: String, percent: Int) {
         val percentValue = percent.coerceIn(0, 100)
+        val now = SystemClock.elapsedRealtime()
+        if (percentValue == lastProgressPercent && message == lastProgressText && now - lastProgressUpdateMs < 250L) return
+        lastProgressText = message
+        lastProgressPercent = percentValue
+        lastProgressUpdateMs = now
+        Log.d(logTag, "Progress $percentValue%: $message")
         runOnUiThread {
             binding.statusText.text = message
             progressPercentText.text = "$percentValue%"
             binding.progressBar.progress = percentValue
             addStatusLine(message)
+        }
+        updateProgressNotification(message, percentValue, percentValue < 100)
+    }
+
+    private fun ensureProgressNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || notificationChannelReady) return
+        val channel = NotificationChannel(
+            progressNotificationChannelId,
+            "Compilation progress",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Shows export progress while compilations are running"
+            setShowBadge(false)
+        }
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(channel)
+        notificationChannelReady = true
+    }
+
+    private fun updateProgressNotification(message: String, percent: Int, ongoing: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        ensureProgressNotificationChannel()
+        val launchIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, progressNotificationChannelId)
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentTitle(
+                when {
+                    message.startsWith("Error:", ignoreCase = true) -> "Compilation failed"
+                    ongoing -> "Compilation in progress"
+                    else -> "Compilation complete"
+                }
+            )
+            .setContentText(message.take(90))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setContentIntent(pendingIntent)
+            .setOnlyAlertOnce(true)
+            .setOngoing(ongoing)
+            .setProgress(100, percent.coerceIn(0, 100), false)
+            .build()
+
+        try {
+            NotificationManagerCompat.from(this).notify(progressNotificationId, notification)
+        } catch (e: SecurityException) {
+            Log.w(logTag, "Notification permission unavailable", e)
+        }
+    }
+
+    private fun clearProgressNotification() {
+        NotificationManagerCompat.from(this).cancel(progressNotificationId)
+    }
+
+    private fun formatDurationMs(totalMs: Long): String {
+        val totalSec = max(0L, totalMs) / 1000
+        val sec = totalSec % 60
+        val min = totalSec / 60
+        val ms = max(0L, totalMs) % 1000
+        return String.format(Locale.US, "%02d:%02d.%03d", min, sec, ms)
+    }
+
+    private fun formatDurationUs(totalUs: Long): String {
+        return formatDurationMs(totalUs / 1000L)
+    }
+
+    private fun formatBytes(totalBytes: Long): String {
+        val units = arrayOf("B", "KB", "MB", "GB")
+        var value = totalBytes.toDouble()
+        var idx = 0
+        while (value >= 1024.0 && idx < units.lastIndex) {
+            value /= 1024.0
+            idx++
+        }
+        return if (idx == 0) {
+            String.format(Locale.US, "%d%s", totalBytes, units[idx])
+        } else {
+            String.format(Locale.US, "%.2f%s", value, units[idx])
         }
     }
 
@@ -885,6 +1037,203 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    private fun checkForUpdates(force: Boolean = false) {
+        if (updateNotificationChannelId.isBlank()) {
+            return
+        }
+        lifecycleScope.launch {
+            val now = System.currentTimeMillis()
+            val lastCheckMs = updatePrefs.getLong("last_update_check_ms", 0L)
+            if (!force && now - lastCheckMs < updateCooldownMs) {
+                return@launch
+            }
+
+            updatePrefs.edit().putLong("last_update_check_ms", now).apply()
+
+            val info = withContext(Dispatchers.IO) { fetchUpdateInfo() } ?: return@launch
+            val latest = info.versionName
+            val current = BuildConfig.VERSION_NAME.ifBlank { "0.0.0" }
+            if (!isRemoteVersionNewer(latest, current)) {
+                if (force) {
+                    runOnUiThread {
+                        emitProgress("You're on the latest version (${current}).", 100)
+                    }
+                }
+                return@launch
+            }
+
+            val notifiedVersion = updatePrefs.getString("notified_version", "")
+            if (notifiedVersion == latest) {
+                return@launch
+            }
+            updatePrefs.edit().putString("notified_version", latest).apply()
+            notifyUserOfUpdate(info)
+            runOnUiThread {
+                emitProgress("Update ${info.versionName} available. Open updates notification to install.", 100)
+            }
+        }
+    }
+
+    private fun notifyUserOfUpdate(info: UpdateInfo) {
+        if (!NotificationManagerCompat.from(this).areNotificationsEnabled()) {
+            return
+        }
+
+        val updateActionUrl = info.downloadUrl.ifEmpty { info.releaseUrl }
+        if (updateActionUrl.isBlank()) {
+            return
+        }
+        val uri = Uri.parse(updateActionUrl)
+        val updateIntent = Intent(Intent.ACTION_VIEW, uri)
+        val updatePendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            updateIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, updateNotificationChannelId)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle("CompilationMaker update available")
+            .setContentText("New version ${info.versionName} is available")
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText(
+                        "New version ${info.versionName} is available. Tap to open and install."
+                            .plus(if (info.releaseNotes.isNotBlank()) "\n\n${info.releaseNotes}" else "")
+                    )
+            )
+            .setContentIntent(updatePendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        NotificationManagerCompat.from(this).notify(updateNotificationId, notification)
+    }
+
+    private fun ensureUpdateNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(NotificationManager::class.java)
+            val channel = NotificationChannel(
+                updateNotificationChannelId,
+                "Compilation Updates",
+                NotificationManager.IMPORTANCE_DEFAULT
+            )
+            channel.description = "Notifies when a newer app version is available"
+            nm.createNotificationChannel(channel)
+        }
+    }
+
+    private fun fetchUpdateInfo(): UpdateInfo? {
+        fetchManifestUpdateInfo()?.let { return it }
+        return try {
+            val response = fetchUrlText(fallbackReleaseEndpoint) ?: return null
+            val json = JSONObject(response)
+            val version = json.optString("tag_name", "")
+                .ifBlank { json.optString("name", "") }
+                .ifBlank { "0.0.0" }
+            val releaseUrl = json.optString("html_url")
+            val assets = json.optJSONArray("assets")
+            val download = if (assets != null && assets.length() > 0) {
+                (assets.get(0) as? JSONObject)?.optString("browser_download_url", "")
+            } else {
+                ""
+            }
+            UpdateInfo(
+                version,
+                releaseUrl,
+                download,
+                "Release from GitHub API"
+            )
+        } catch (_: Exception) {
+            runOnUiThread {
+                emitProgress("Update check failed. Verify manifest and/or release endpoint settings.", 100)
+            }
+            null
+        }
+    }
+
+    private fun fetchManifestUpdateInfo(): UpdateInfo? {
+        return try {
+            val response = fetchUrlText(updateManifestBlobEndpoint) ?: return null
+            val top = JSONObject(response)
+            val encoding = top.optString("encoding", "")
+            val raw = top.optString("content", "")
+            val manifestContent = if (encoding == "base64") {
+                String(Base64.decode(raw.replace("\\s".toRegex(), ""), Base64.DEFAULT))
+            } else {
+                raw
+            }
+            val manifest = JSONObject(manifestContent)
+            val version = manifest.optString("version", "")
+                .ifBlank { manifest.optString("tag", "") }
+                .ifBlank { manifest.optString("name", "") }
+                .ifBlank { "0.0.0" }
+            val apkUrl = manifest.optJSONObject("apk")?.optString("url", "")
+                .ifBlank { manifest.optString("apkUrl", "") }
+            val releaseUrl = manifest.optString("releaseUrl", "")
+                .ifBlank { top.optString("download_url", "") }
+                .ifBlank { fallbackReleaseEndpoint }
+            val notes = manifest.optString("notes", "").ifBlank { manifest.optString("changelog", "") }
+            UpdateInfo(
+                version,
+                releaseUrl,
+                apkUrl,
+                notes
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun isRemoteVersionNewer(remote: String, current: String): Boolean {
+        val remoteNormalized = remote.trim().trimStart('v', 'V').split(".").map { it.toIntOrNull() ?: 0 }
+        val currentNormalized = current.trim().trimStart('v', 'V').split(".").map { it.toIntOrNull() ?: 0 }
+        val maxParts = max(remoteNormalized.size, currentNormalized.size)
+        for (i in 0 until maxParts) {
+            val remotePart = remoteNormalized.getOrElse(i) { 0 }
+            val currentPart = currentNormalized.getOrElse(i) { 0 }
+            when {
+                remotePart > currentPart -> return true
+                remotePart < currentPart -> return false
+            }
+        }
+        return false
+    }
+
+    private fun fetchUrlText(url: String): String? {
+        val connection = try {
+            java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        } catch (_: Exception) {
+            null
+        } ?: return null
+
+        return try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 5000
+            connection.readTimeout = 5000
+            connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
+            connection.connect()
+            if (connection.responseCode !in 200..299) {
+                if (connection.responseCode == 404 && url.contains("/contents/")) {
+                    runOnUiThread {
+                        emitProgress("Update manifest not found at app-update.json in your GitHub repo.", 100)
+                    }
+                } else if (connection.responseCode == 404 && url.contains("/releases/")) {
+                    runOnUiThread {
+                        emitProgress("Release endpoint not found. Ensure releases are enabled for your repo.", 100)
+                    }
+                }
+                null
+            } else {
+                connection.inputStream.bufferedReader().use { it.readText() }
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            connection.disconnect()
+        }
+    }
 }
 
 private class VideoCompilationEngine(private val context: MainActivity) {
@@ -907,7 +1256,9 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         val retriever = android.media.MediaMetadataRetriever().apply {
             setDataSource(context, sourceUri)
         }
-        val timing = ScanTimingSummary()
+            val timing = ScanTimingSummary()
+            val sourceWidthPx = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+            val sourceHeightPx = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
 
         try {
             val durationMs = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
@@ -917,6 +1268,13 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             val transitions = mutableListOf<Long>()
             val checkpointMs = frameStepMs.coerceAtLeast(1L)
             var previousNumber: Int? = null
+            val fastModeScaleWidthPx = when {
+                scanMode != ScanMode.Fast -> 0
+                frameStepMs <= 750L -> 240
+                else -> 300
+            }
+            var previousSignature: RoiSignature? = null
+            var framesSinceRecognition = 0
             var cursorMs = 0L
             var checkpointCount = 0
             while (cursorMs <= durationMs) {
@@ -934,9 +1292,13 @@ private class VideoCompilationEngine(private val context: MainActivity) {
 
                 var frame: Bitmap?
                 val decodeMs = measureTimeMillis {
-                    frame = retriever.getFrameAtTime(
-                        cursorMs * 1000,
-                        android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                    frame = getAnalysisFrameAtTime(
+                        retriever,
+                        cursorMs,
+                        fastModeScaleWidthPx,
+                        sourceRotationDegrees,
+                        sourceWidthPx,
+                        sourceHeightPx
                     )
                 }
                 timing.decodeMs += decodeMs
@@ -953,60 +1315,97 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                 }
 
                 var didDetectChange = false
-                try {
-                    val detected = try {
-                        val detection = detectCornerNumberWithTimings(frame, scanWindow, sourceRotationDegrees)
-                        timing.cropMs += detection.cropMs
-                        timing.preprocessMs += detection.preprocessMs
-                        timing.ocrMs += detection.ocrMs
-                        detection.value
-                    } catch (e: Exception) {
-                        Log.w(tag, "OCR failed at ${cursorMs}ms", e)
-                        null
+                val frameBitmap = frame
+                if (frameBitmap == null) {
+                    cursorMs = when (scanMode) {
+                        ScanMode.Fast -> cursorMs + frameStepMs
+                        ScanMode.Checkpoints3Min -> {
+                            if (frameStepMs <= 0L) break
+                            (cursorMs / checkpointMs + 1) * checkpointMs
+                        }
                     }
+                    checkpointCount++
+                    continue
+                }
+                try {
+                    val signature = measureTimeMillisWithResult {
+                        computeRoiSignature(frameBitmap, scanWindow, sourceRotationDegrees)
+                    }
+                    timing.preprocessMs += signature.elapsedMs
+                    val shouldRecognize = when (scanMode) {
+                        ScanMode.Checkpoints3Min -> true
+                        ScanMode.Fast -> {
+                            val changed = previousSignature?.let { roiDifference(it, signature.value) >= 7.5f } ?: true
+                            changed || framesSinceRecognition >= max(1, 5_000L / frameStepMs).toInt()
+                        }
+                    }
+                    val detected = if (shouldRecognize) {
+                        framesSinceRecognition = 0
+                        var ocrFrame: Bitmap? = null
+                        var mustRecycleOcrFrame = false
+                        try {
+                            if (fastModeScaleWidthPx > 0) {
+                                ocrFrame = getAnalysisFrameAtTime(
+                                    retriever,
+                                    cursorMs,
+                                    0,
+                                    sourceRotationDegrees,
+                                    sourceWidthPx,
+                                    sourceHeightPx
+                                )
+                                if (ocrFrame != null) {
+                                    mustRecycleOcrFrame = true
+                                }
+                            }
+                            val detection = detectCornerNumberWithTimings(ocrFrame ?: frameBitmap, scanWindow, sourceRotationDegrees)
+                            timing.cropMs += detection.cropMs
+                            timing.preprocessMs += detection.preprocessMs
+                            timing.ocrMs += detection.ocrMs
+                            detection.value
+                        } catch (e: Exception) {
+                            Log.w(tag, "OCR failed at ${cursorMs}ms", e)
+                            null
+                        } finally {
+                            if (mustRecycleOcrFrame) {
+                                ocrFrame?.recycle()
+                            }
+                        }
+                    } else {
+                        framesSinceRecognition++
+                        previousNumber
+                    }
+                    previousSignature = signature.value
 
                     var nextNumber = detected
                     didDetectChange = detected != null && previousNumber != null && detected != previousNumber
                     if (didDetectChange) {
-                        transitions.add(cursorMs)
-                        val cutStartMs = max(0L, cursorMs - 10_000L)
-                        val cutEndMs = min(durationMs, cursorMs + 30_000L)
+                        val transitionMs = if (scanMode == ScanMode.Checkpoints3Min) {
+                            refineTransitionNearHit(
+                                retriever,
+                                max(0L, cursorMs - min(checkpointMs, 30_000L)),
+                                cursorMs,
+                                scanWindow,
+                                sourceRotationDegrees,
+                                previousNumber!!,
+                                timing
+                            )
+                        } else {
+                            cursorMs
+                        }
+                        transitions.add(transitionMs)
+                        val cutStartMs = max(0L, transitionMs - 10_000L)
+                        val cutEndMs = min(durationMs, transitionMs + 30_000L)
                         nextNumber = detected
                         progress(
-                            "Transition at ${formatMs(cursorMs)}; cut ${formatMs(cutStartMs)} -> ${formatMs(cutEndMs)}",
-                            min(100, ((cursorMs.toFloat() / durationMs.toFloat()) * 100f + 1).toInt())
+                            "Transition at ${formatMs(transitionMs)}; cut ${formatMs(cutStartMs)} -> ${formatMs(cutEndMs)}",
+                            min(100, ((transitionMs.toFloat() / durationMs.toFloat()) * 100f + 1).toInt())
                         )
-                    }
-
-                    if (scanMode == ScanMode.Checkpoints3Min && previousNumber != null && !didDetectChange) {
-                        val probeResult = scanCheckpointWindowForTransitions(
-                            retriever,
-                            cursorMs,
-                            frameStepMs,
-                            scanWindow,
-                            sourceRotationDegrees,
-                            previousNumber,
-                            durationMs,
-                            timing
-                        )
-                        if (probeResult != null) {
-                            val (probeTransitionMs, probeDetectedNumber) = probeResult
-                            transitions.add(probeTransitionMs)
-                            val cutStartMs = max(0L, probeTransitionMs - 10_000L)
-                            val cutEndMs = min(durationMs, probeTransitionMs + 30_000L)
-                            nextNumber = probeDetectedNumber
-                            progress(
-                                "Checkpoint refine hit transition at ${formatMs(probeTransitionMs)}; cut ${formatMs(cutStartMs)} -> ${formatMs(cutEndMs)}",
-                                min(100, ((probeTransitionMs.toFloat() / durationMs.toFloat()) * 100f + 1).toInt())
-                            )
-                            didDetectChange = true
-                        }
                     }
                     if (nextNumber != null) {
                         previousNumber = nextNumber
                     }
                 } finally {
-                    frame.recycle()
+                    frameBitmap.recycle()
                 }
 
                 cursorMs = when (scanMode) {
@@ -1030,10 +1429,11 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             }
 
             Log.d(tag, "Detected transitions: ${transitions.size}")
+            val artifactPadMs = 500L
             val rawSegments = transitions.map { t ->
                 SegmentWindow(
-                    startMs = max(0L, t - 10_000),
-                    endMs = min(durationMs, t + 30_000)
+                    startMs = max(0L, t - 10_000L - artifactPadMs),
+                    endMs = min(durationMs, t + 30_000L + artifactPadMs)
                 )
             }.sortedBy { it.startMs }
             val mergedTiming = measureTimeMillis {
@@ -1051,7 +1451,6 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                 transitionsFound = merged.size,
                 timing = timing
             )
-            latestScanReport = report
             latestScanReportPath = writeScanReport(report)
             return@withContext ScanFindResult(merged, timing)
         } finally {
@@ -1060,47 +1459,64 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         }
     }
 
-    private suspend fun scanCheckpointWindowForTransitions(
+    private suspend fun refineTransitionNearHit(
         retriever: MediaMetadataRetriever,
-        centerMs: Long,
-        checkpointMs: Long,
+        startMs: Long,
+        hitMs: Long,
         scanWindow: ScanWindow,
         sourceRotationDegrees: Int,
         previousNumber: Int,
-        durationMs: Long,
         timing: ScanTimingSummary
-    ): Pair<Long, Int>? {
-        if (checkpointMs <= 0L) return null
-        val halfWindowMs = max(1_000L, checkpointMs / 2L)
-        val localStepMs = 1_000L
-        val startMs = max(0L, centerMs - halfWindowMs)
-        val endMs = min(durationMs, centerMs + halfWindowMs)
-        var localCursorMs = startMs
-        while (localCursorMs <= endMs) {
-            var localFrame: Bitmap?
-            val decodeMs = measureTimeMillis {
-                localFrame = retriever.getFrameAtTime(localCursorMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+    ): Long {
+        var lowerMs = startMs
+        var upperMs = hitMs
+        var probeMs = max(startMs, hitMs - 5_000L)
+
+        while (probeMs > startMs) {
+            val detected = detectNumberAt(retriever, probeMs, scanWindow, sourceRotationDegrees, timing)
+            if (detected == null || detected == previousNumber) {
+                lowerMs = probeMs
+                break
             }
-            timing.decodeMs += decodeMs
-            val frame = localFrame ?: run {
-                localCursorMs += localStepMs
-                continue
-            }
-            try {
-                val detection = detectCornerNumberWithTimings(frame, scanWindow, sourceRotationDegrees)
-                timing.cropMs += detection.cropMs
-                timing.preprocessMs += detection.preprocessMs
-                timing.ocrMs += detection.ocrMs
-                val detected = detection.value
-                if (detected != null && detected != previousNumber) {
-                    return Pair(localCursorMs, detected)
-                }
-            } finally {
-                frame.recycle()
-            }
-            localCursorMs += localStepMs
+            upperMs = probeMs
+            probeMs = max(startMs, probeMs - 5_000L)
         }
-        return null
+
+        repeat(7) {
+            if (upperMs - lowerMs <= 250L) return@repeat
+            val midMs = lowerMs + (upperMs - lowerMs) / 2L
+            val detected = detectNumberAt(retriever, midMs, scanWindow, sourceRotationDegrees, timing)
+            if (detected != null && detected != previousNumber) {
+                upperMs = midMs
+            } else {
+                lowerMs = midMs
+            }
+        }
+        return upperMs
+    }
+
+    private suspend fun detectNumberAt(
+        retriever: MediaMetadataRetriever,
+        cursorMs: Long,
+        scanWindow: ScanWindow,
+        sourceRotationDegrees: Int,
+        timing: ScanTimingSummary
+    ): Int? {
+        var frame: Bitmap?
+        val decodeMs = measureTimeMillis {
+        frame = getAnalysisFrameAtTime(retriever, cursorMs)
+        }
+        timing.decodeMs += decodeMs
+        val localFrame = frame ?: return null
+        return try {
+            val detection = detectCornerNumberWithTimings(localFrame, scanWindow, sourceRotationDegrees)
+            timing.cropMs += detection.cropMs
+            timing.preprocessMs += detection.preprocessMs
+            timing.ocrMs += detection.ocrMs
+            detection.value
+        } finally {
+            localFrame.recycle()
+        }
     }
 
     suspend fun getDurationMs(sourceUri: Uri): Long = withContext(Dispatchers.IO) {
@@ -1123,21 +1539,15 @@ private class VideoCompilationEngine(private val context: MainActivity) {
     ): File = withContext(Dispatchers.IO) {
         val cache = context.cacheDir
         val safeFormat = if (format == ExportFormat.Webm) ExportFormat.Mp4 else format
-        val cachedInput = File(cache, "input_source.mp4")
-        context.contentResolver.openInputStream(sourceUri).use { input ->
-            FileOutputStream(cachedInput).use { out ->
-                input?.copyTo(out) ?: throw IllegalStateException("Cannot open source video")
-            }
-        }
 
         if (segments.isEmpty()) throw IllegalStateException("No segments to assemble")
         val output = File(cache, "compilation_${System.currentTimeMillis()}.${safeFormat.extension}")
-        progress("Using ${quality.label} profile", 82)
-        progress("Assembling final compilation", 95)
-        materializeCompilation(cachedInput, segments, safeFormat, output) { message, percent ->
+        progress("Using ${quality.label} profile", 56)
+        progress("Opening source for direct export", 57)
+        materializeCompilation(sourceUri, segments, safeFormat, output) { message, percent ->
             progress(message, percent)
         }
-        progress("Compilation ready to save", 100)
+        progress("Compilation ready to save", 94)
         return@withContext output
     }
 
@@ -1155,7 +1565,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         val scaled = scaleBitmapForOcr(corner)
         return try {
             val image = InputImage.fromBitmap(scaled, 0)
-            val result = withTimeoutOrNull(700) { recognizer.process(image).await() } ?: return null
+            val result = recognizer.process(image).await()
             val text = result.text.replace("\n", " ")
             val match = Regex("[-+]?[0-9]+").find(text)
             match?.value?.toIntOrNull()
@@ -1193,15 +1603,11 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         return try {
             val image = InputImage.fromBitmap(scaled, 0)
             val ocrStart = System.currentTimeMillis()
-            val result = withTimeoutOrNull(700) { recognizer.process(image).await() }
+            val result = recognizer.process(image).await()
             val ocrMs = System.currentTimeMillis() - ocrStart
-            if (result == null) {
-                NumberDetectionResult(null, cropMs, preprocessMs, ocrMs)
-            } else {
-                val text = result.text.replace("\n", " ")
-                val match = Regex("[-+]?[0-9]+").find(text)
-                NumberDetectionResult(match?.value?.toIntOrNull(), cropMs, preprocessMs, ocrMs)
-            }
+            val text = result.text.replace("\n", " ")
+            val match = Regex("[-+]?[0-9]+").find(text)
+            NumberDetectionResult(match?.value?.toIntOrNull(), cropMs, preprocessMs, ocrMs)
         } finally {
             if (scaled != corner) {
                 scaled.recycle()
@@ -1221,6 +1627,99 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                 Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
             }
         }
+    }
+
+    private fun getAnalysisFrameAtTime(
+        retriever: MediaMetadataRetriever,
+        cursorMs: Long,
+        targetWidthPx: Int = 0,
+        sourceRotationDegrees: Int = 0,
+        sourceWidth: Int = 0,
+        sourceHeight: Int = 0
+    ): Bitmap? {
+        val timeUs = cursorMs * 1000L
+        val decodeWidth = targetWidthPx.coerceAtLeast(0)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 && decodeWidth > 0) {
+            val decodeHeight = scaledHeightForWidth(decodeWidth, sourceRotationDegrees, sourceWidth, sourceHeight)
+            if (decodeHeight > 0) {
+                return retriever.getScaledFrameAtTime(
+                    timeUs,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    decodeWidth,
+                    decodeHeight
+                ) ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            }
+        }
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            retriever.getScaledFrameAtTime(
+                timeUs,
+                MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                640,
+                360
+            ) ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        } else {
+            retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        }
+    }
+
+    private fun computeRoiSignature(frame: Bitmap, scanWindow: ScanWindow, sourceRotationDegrees: Int): RoiSignature {
+        val normalizedFrame = if (sourceRotationDegrees == 0) frame else normalizeBitmapForOcr(frame, sourceRotationDegrees)
+        return try {
+            val startX = (normalizedFrame.width * scanWindow.xPercent).roundToInt().coerceIn(0, normalizedFrame.width - 1)
+            val startY = (normalizedFrame.height * scanWindow.yPercent).roundToInt().coerceIn(0, normalizedFrame.height - 1)
+            val roiWidth = (normalizedFrame.width * scanWindow.widthPercent).roundToInt().coerceIn(1, normalizedFrame.width - startX)
+            val roiHeight = (normalizedFrame.height * scanWindow.heightPercent).roundToInt().coerceIn(1, normalizedFrame.height - startY)
+            val grid = IntArray(64)
+            var total = 0
+            var index = 0
+            for (gy in 0 until 8) {
+                val y = (startY + (gy + 0.5f) * roiHeight / 8f).roundToInt().coerceIn(0, normalizedFrame.height - 1)
+                for (gx in 0 until 8) {
+                    val x = (startX + (gx + 0.5f) * roiWidth / 8f).roundToInt().coerceIn(0, normalizedFrame.width - 1)
+                    val pixel = normalizedFrame.getPixel(x, y)
+                    val r = (pixel shr 16) and 0xff
+                    val g = (pixel shr 8) and 0xff
+                    val b = pixel and 0xff
+                    val luma = (r * 30 + g * 59 + b * 11) / 100
+                    grid[index++] = luma
+                    total += luma
+                }
+            }
+            RoiSignature(grid, total / grid.size)
+        } finally {
+            if (normalizedFrame !== frame) {
+                normalizedFrame.recycle()
+            }
+        }
+    }
+
+    private fun scaledHeightForWidth(
+        targetWidthPx: Int,
+        sourceRotationDegrees: Int,
+        sourceWidth: Int,
+        sourceHeight: Int
+    ): Int {
+        val width = targetWidthPx.coerceAtLeast(1)
+        val sourceW = if (sourceRotationDegrees == 90 || sourceRotationDegrees == 270) sourceHeight else sourceWidth
+        val sourceH = if (sourceRotationDegrees == 90 || sourceRotationDegrees == 270) sourceWidth else sourceHeight
+        if (sourceW <= 0 || sourceH <= 0) return 0
+        if (width >= sourceW) return 0
+        val scale = width.toFloat() / sourceW.toFloat()
+        return (sourceH.toFloat() * scale).toInt().coerceAtLeast(1)
+    }
+
+    private fun roiDifference(previous: RoiSignature, current: RoiSignature): Float {
+        var total = kotlin.math.abs(previous.average - current.average).toFloat()
+        for (i in previous.samples.indices) {
+            total += kotlin.math.abs(previous.samples[i] - current.samples[i])
+        }
+        return total / (previous.samples.size + 1).toFloat()
+    }
+
+    private inline fun <T> measureTimeMillisWithResult(block: () -> T): TimedResult<T> {
+        val start = SystemClock.elapsedRealtime()
+        val result = block()
+        return TimedResult(result, SystemClock.elapsedRealtime() - start)
     }
 
     private fun writeScanReport(report: ScanFindReport): String {
@@ -1273,16 +1772,12 @@ private class VideoCompilationEngine(private val context: MainActivity) {
     }
 
     private fun materializeCompilation(
-        source: File,
+        sourceUri: Uri,
         segments: List<SegmentWindow>,
         format: ExportFormat,
         output: File,
         progress: (String, Int) -> Unit
     ) {
-        if (!source.exists()) {
-            throw IllegalStateException("Cannot open source input for trimming")
-        }
-
         if (segments.isEmpty()) {
             throw IllegalStateException("No segments to assemble")
         }
@@ -1294,10 +1789,11 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         }
 
         val extractor = MediaExtractor()
-        extractor.setDataSource(source.absolutePath)
+        extractor.setDataSource(context, sourceUri, null)
         val trackMap = mutableMapOf<Int, Int>()
 
         val muxer = MediaMuxer(output.absolutePath, muxerFormat)
+        val trackMimeTypes = mutableMapOf<Int, String>()
         for (trackIndex in 0 until extractor.trackCount) {
             val trackFormat = extractor.getTrackFormat(trackIndex)
             val mime = trackFormat.getString(MediaFormat.KEY_MIME)
@@ -1305,6 +1801,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                 continue
             }
             trackMap[trackIndex] = muxer.addTrack(trackFormat)
+            trackMimeTypes[trackIndex] = mime
         }
 
         if (trackMap.isEmpty()) {
@@ -1316,15 +1813,26 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         val totalSegments = segments.size
         val segmentBuffer = ByteBuffer.allocate(5 * 1024 * 1024)
         val sampleInfo = MediaCodec.BufferInfo()
-        var outputOffsetUs = 0L
+        val trackOutputOffsetUs = trackMap.keys.associateWith { 0L }.toMutableMap()
+        var outputCursorUs = 0L
+        val totalSourceUs = max(1L, segments.sumOf { max(1L, it.endMs - it.startMs) } * 1000L)
+        val progressTrack = trackMap.keys.firstOrNull { (trackMimeTypes[it] ?: "").startsWith("video/") } ?: trackMap.keys.firstOrNull()
+        var exportedUsEstimate = 0L
+        var lastExportLogMs = 0L
 
         segments.forEachIndexed { index, segment ->
             val segStartUs = segment.startMs * 1000L
             val segEndUs = segment.endMs * 1000L
+            val segmentDurationUs = max(1L, segEndUs - segStartUs)
+            var segmentMaxUs = outputCursorUs
 
             for (trackIndex in trackMap.keys) {
+                var lastInputSampleUs = Long.MIN_VALUE
+                var lastOutputSampleUs = outputCursorUs
                 extractor.selectTrack(trackIndex)
                 extractor.seekTo(segStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                val isProgressTrack = trackIndex == progressTrack
+                var segTrackMaxUs = outputCursorUs
 
                 while (true) {
                     val sampleTimeUs = extractor.sampleTime
@@ -1342,16 +1850,49 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                     }
 
                     sampleInfo.size = sampleSize
-                    sampleInfo.presentationTimeUs = outputOffsetUs + sampleTimeUs - segStartUs
+                    val targetPtsUs = trackOutputOffsetUs.getValue(trackIndex) + sampleTimeUs - segStartUs
+                    val outputPtsUs = if (targetPtsUs > lastOutputSampleUs) {
+                        targetPtsUs
+                    } else {
+                        lastOutputSampleUs + 1L
+                    }
+                    sampleInfo.presentationTimeUs = outputPtsUs
                     sampleInfo.flags = extractor.sampleFlags
                     sampleInfo.offset = 0
                     muxer.writeSampleData(trackMap.getValue(trackIndex), segmentBuffer, sampleInfo)
+                    lastInputSampleUs = sampleTimeUs
+                    lastOutputSampleUs = outputPtsUs
+                    if (isProgressTrack) {
+                        segTrackMaxUs = maxOf(segTrackMaxUs, outputPtsUs)
+                        val now = SystemClock.elapsedRealtime()
+                        if (now - lastExportLogMs >= 250L) {
+                            val completedUs = (exportedUsEstimate + (segTrackMaxUs - outputCursorUs)).coerceAtMost(totalSourceUs)
+                            val exportPercent = (60 + (completedUs * 35L / totalSourceUs).toInt()).coerceIn(60, 95)
+                            val remaining = formatDurationUs(totalSourceUs - completedUs)
+                            progress(
+                                "Exporting segments ${index + 1}/$totalSegments (${formatDurationMs(completedUs / 1000L)} / ${formatDurationMs(totalSourceUs / 1000L)}, remaining $remaining)",
+                                exportPercent
+                            )
+                            lastExportLogMs = now
+                        }
+                    }
                     extractor.advance()
                 }
+                segmentMaxUs = maxOf(segmentMaxUs, lastOutputSampleUs + 1L)
+                if (isProgressTrack) {
+                    val segmentTrackWrittenUs = (segTrackMaxUs - outputCursorUs).coerceAtLeast(0L)
+                    exportedUsEstimate += segmentTrackWrittenUs
+                }
+                trackOutputOffsetUs[trackIndex] = segmentMaxUs
                 extractor.unselectTrack(trackIndex)
             }
 
-            outputOffsetUs += max(segment.endMs - segment.startMs, 0L) * 1000L
+            outputCursorUs = maxOf(outputCursorUs + segmentDurationUs, segmentMaxUs)
+            trackMap.keys.forEach { trackIndex ->
+                if (trackOutputOffsetUs.getValue(trackIndex) < outputCursorUs) {
+                    trackOutputOffsetUs[trackIndex] = outputCursorUs
+                }
+            }
             val percent = 60 + ((index + 1) * 35 / totalSegments)
             progress("Writing segment ${index + 1}/$totalSegments", percent)
         }
@@ -1376,6 +1917,18 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         }
         merged.add(current)
         return merged
+    }
+
+    private fun formatDurationMs(totalMs: Long): String {
+        val totalSec = max(0L, totalMs) / 1000
+        val sec = totalSec % 60
+        val min = totalSec / 60
+        val ms = max(0L, totalMs) % 1000
+        return String.format(Locale.US, "%02d:%02d.%03d", min, sec, ms)
+    }
+
+    private fun formatDurationUs(totalUs: Long): String {
+        return formatDurationMs(totalUs / 1000L)
     }
 
     private fun formatMs(ms: Long): String {
@@ -1418,6 +1971,23 @@ private data class NumberDetectionResult(
     val cropMs: Long,
     val preprocessMs: Long,
     val ocrMs: Long
+)
+
+private data class RoiSignature(
+    val samples: IntArray,
+    val average: Int
+)
+
+private data class TimedResult<T>(
+    val value: T,
+    val elapsedMs: Long
+)
+
+private data class UpdateInfo(
+    val versionName: String,
+    val releaseUrl: String,
+    val downloadUrl: String,
+    val releaseNotes: String
 )
 
 private data class SegmentWindow(val startMs: Long, val endMs: Long)

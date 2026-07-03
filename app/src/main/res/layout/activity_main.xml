@@ -194,6 +194,13 @@
             android:layout_marginTop="24dp"
             android:text="Build Compilation" />
 
+        <Button
+            android:id="@+id/checkUpdatesButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="Check for updates" />
+
         <ProgressBar
             android:id="@+id/progressBar"
             style="@android:style/Widget.Material.Light.ProgressBar.Horizontal"

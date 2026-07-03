@@ -1,0 +1,8 @@
+{
+  "version": "0.11.0",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/latest",
+  "apk": {
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.11.0/app-debug.apk"
+  },
+  "notes": "Phase 11 manifest+release automation enabled. APK built from tag and attached to each GitHub release."
+}
