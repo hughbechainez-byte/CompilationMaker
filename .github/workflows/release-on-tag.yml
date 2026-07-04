@@ -28,17 +28,22 @@ jobs:
       - name: Build debug APK
         run: |
           ./gradlew :app:assembleDebug
+          ./gradlew :app:assembleRelease
 
-      - name: Stage versioned APK artifact
+      - name: Locate APK artifact
         id: artifact
         run: |
-          mkdir -p dist
           TAG_NAME="${GITHUB_REF_NAME}"
-          if [ ! -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
-            echo "APK not found at expected path."
+          APK_PATH="$(find app/build/outputs -type f -name '*.apk' | head -n 1)"
+          if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
+            echo "APK not found in app/build/outputs"
+            echo "Contents of app/build/outputs/apk:" 
+            find app/build/outputs/apk -type f -name '*.apk' 2>/dev/null || true
             exit 1
           fi
-          cp "app/build/outputs/apk/debug/app-debug.apk" "dist/CompilationMaker-${TAG_NAME}.apk"
+          echo "Found APK: $APK_PATH"
+          mkdir -p dist
+          cp "$APK_PATH" "dist/CompilationMaker-${TAG_NAME}.apk"
           echo "apk_path=dist/CompilationMaker-${TAG_NAME}.apk" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
@@ -50,3 +55,14 @@ jobs:
           generate_release_notes: true
           make_latest: "true"
           fail_on_unmatched_files: true
+
+      - name: Fallback upload (ensures APK is attached)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${{ steps.artifact.outputs.apk_path }}" --clobber
+          else
+            echo "Release not yet published, cannot attach APK."
+            exit 1
+          fi
