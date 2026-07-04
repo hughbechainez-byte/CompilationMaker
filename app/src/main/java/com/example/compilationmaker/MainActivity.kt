@@ -1132,7 +1132,7 @@ class MainActivity : AppCompatActivity() {
             val version = json.optString("tag_name", "")
                 .ifBlank { json.optString("name", "") }
                 .ifBlank { "0.0.0" }
-            val releaseUrl = json.optString("html_url")
+            val releaseUrl = json.optString("html_url", "")
             val assets = json.optJSONArray("assets")
             val download = if (assets != null && assets.length() > 0) {
                 (assets.get(0) as? JSONObject)?.optString("browser_download_url", "")
@@ -1169,7 +1169,7 @@ class MainActivity : AppCompatActivity() {
                 .ifBlank { manifest.optString("tag", "") }
                 .ifBlank { manifest.optString("name", "") }
                 .ifBlank { "0.0.0" }
-            val apkUrl = manifest.optJSONObject("apk")?.optString("url", "")
+            val apkUrl = (manifest.optJSONObject("apk")?.optString("url", "") ?: "")
                 .ifBlank { manifest.optString("apkUrl", "") }
             val releaseUrl = manifest.optString("releaseUrl", "")
                 .ifBlank { top.optString("download_url", "") }
