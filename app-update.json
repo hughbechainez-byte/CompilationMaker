@@ -1,8 +1,8 @@
 {
-  "version": "0.14.2",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.2",
+  "version": "0.14.3",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.3",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.2/CompilationMaker-v0.14.2.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.3/CompilationMaker-v0.14.3.apk"
   },
-  "notes": "Phase 14.2 changes Check for updates to stay inside the app: it checks the manifest, prompts when an update exists, downloads the APK in the background, and opens Android's installer without launching GitHub in a browser."
+  "notes": "Phase 14.3 adds faster preview-first compilation, lets you play and scrub the generated compilation before saving, and adds instant cut vs gradual transition padding modes to help reduce persistent transition artifacts."
 }

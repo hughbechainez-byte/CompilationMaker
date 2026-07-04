@@ -92,6 +92,10 @@ class MainActivity : AppCompatActivity() {
     private var lastProgressUpdateMs = 0L
     private var notificationChannelReady = false
     private var previewBitmap: Bitmap? = null
+    private var pendingCompilationFile: File? = null
+    private var pendingCompilationFormat: ExportFormat? = null
+    private var isCompilationPreviewScrubbing = false
+    private var selectedCompilationPreviewMs = 0
     private var roiTouchMode = RoiTouchMode.NONE
     private var roiTouchStartX = 0f
     private var roiTouchStartY = 0f
@@ -174,6 +178,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var scanSpeedSpinner: Spinner
     private lateinit var videoPreview: VideoView
     private lateinit var previewSeekBar: SeekBar
+    private lateinit var compilationPreview: VideoView
+    private lateinit var compilationPreviewSeekBar: SeekBar
+    private lateinit var playCompilationPreviewButton: Button
+    private lateinit var saveCompilationButton: Button
+    private lateinit var discardCompilationButton: Button
     private lateinit var frameImage: ImageView
     private lateinit var frameContainer: FrameLayout
     private lateinit var roiOverlay: View
@@ -187,9 +196,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusFeedText: TextView
     private lateinit var statusFeedScroll: ScrollView
     private lateinit var checkUpdatesButton: Button
+    private lateinit var transitionStyleSpinner: Spinner
 
     private val qualityOptions = arrayOf(ExportQuality.Low, ExportQuality.Medium, ExportQuality.High)
     private val formatOptions = arrayOf(ExportFormat.Mp4, ExportFormat.Webm, ExportFormat.Mov)
+    private val transitionStyleOptions = arrayOf(TransitionStyle.Instant, TransitionStyle.Gradual)
     private val scanProfiles = arrayOf(
         ScanProfile("Very fast (0.5s)", 500L, ScanMode.Fast),
         ScanProfile("Balanced (1s)", 1_000L, ScanMode.Fast),
@@ -234,6 +245,9 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopPreviewProgressUpdates()
+        stopCompilationPreviewProgressUpdates()
+        pendingCompilationFile?.delete()
+        pendingCompilationFile = null
         previewBitmap?.recycle()
         previewBitmap = null
     }
@@ -242,8 +256,14 @@ class MainActivity : AppCompatActivity() {
         qualitySpinner = binding.qualityPicker
         formatSpinner = binding.formatPicker
         scanSpeedSpinner = binding.scanSpeedPicker
+        transitionStyleSpinner = binding.transitionStylePicker
         videoPreview = binding.videoPreview
         previewSeekBar = binding.previewSeekBar
+        compilationPreview = binding.compilationPreview
+        compilationPreviewSeekBar = binding.compilationPreviewSeekBar
+        playCompilationPreviewButton = binding.playCompilationPreviewButton
+        saveCompilationButton = binding.saveCompilationButton
+        discardCompilationButton = binding.discardCompilationButton
         frameImage = binding.frameImage
         frameContainer = binding.frameContainer
         roiOverlay = binding.roiOverlay
@@ -304,6 +324,67 @@ class MainActivity : AppCompatActivity() {
         videoPreview.setOnCompletionListener {
             selectedPreviewMs = 0
             previewSeekBar.progress = 0
+        }
+
+        compilationPreview.setOnPreparedListener { mediaPlayer ->
+            val duration = max(1, mediaPlayer.duration)
+            compilationPreviewSeekBar.max = duration
+            compilationPreviewSeekBar.progress = 0
+            compilationPreviewSeekBar.isEnabled = true
+            selectedCompilationPreviewMs = 0
+            compilationPreview.seekTo(0)
+            compilationPreview.pause()
+            playCompilationPreviewButton.text = "Play"
+            startCompilationPreviewProgressUpdates()
+        }
+
+        compilationPreview.setOnCompletionListener {
+            selectedCompilationPreviewMs = 0
+            compilationPreviewSeekBar.progress = 0
+            playCompilationPreviewButton.text = "Play"
+        }
+
+        compilationPreviewSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                isCompilationPreviewScrubbing = true
+                selectedCompilationPreviewMs = progress
+                compilationPreview.seekTo(progress)
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar) {
+                isCompilationPreviewScrubbing = true
+            }
+
+            override fun onStopTrackingTouch(seekBar: SeekBar) {
+                selectedCompilationPreviewMs = seekBar.progress
+                compilationPreview.seekTo(selectedCompilationPreviewMs)
+                isCompilationPreviewScrubbing = false
+            }
+        })
+
+        playCompilationPreviewButton.setOnClickListener {
+            if (pendingCompilationFile == null) {
+                emitProgress("Build a compilation preview first.", 100)
+                return@setOnClickListener
+            }
+            if (compilationPreview.isPlaying) {
+                compilationPreview.pause()
+                playCompilationPreviewButton.text = "Play"
+            } else {
+                compilationPreview.start()
+                playCompilationPreviewButton.text = "Pause"
+                startCompilationPreviewProgressUpdates()
+            }
+        }
+
+        saveCompilationButton.setOnClickListener {
+            savePendingCompilation()
+        }
+
+        discardCompilationButton.setOnClickListener {
+            clearPendingCompilationPreview(deleteFile = true)
+            emitProgress("Compilation preview discarded.", 100)
         }
 
         frameImage.setOnTouchListener { _, event ->
@@ -413,7 +494,8 @@ class MainActivity : AppCompatActivity() {
 
             val quality = qualityOptions[qualitySpinner.selectedItemPosition]
             val format = formatOptions[formatSpinner.selectedItemPosition]
-            runCompilation(source, quality, format)
+            val transitionStyle = transitionStyleOptions[transitionStyleSpinner.selectedItemPosition.coerceIn(0, transitionStyleOptions.lastIndex)]
+            runCompilation(source, quality, format, transitionStyle)
         }
         checkUpdatesButton.setOnClickListener {
             checkForUpdates(force = true)
@@ -436,6 +518,12 @@ class MainActivity : AppCompatActivity() {
             scanProfiles.map { it.label },
         )
         scanSpeedSpinner.setSelection(4, false)
+        transitionStyleSpinner.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            transitionStyleOptions.map { it.label },
+        )
+        transitionStyleSpinner.setSelection(1, false)
         setScanAreaFromPercents(
             defaultScanWindow.xPercent,
             defaultScanWindow.yPercent,
@@ -461,10 +549,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun runCompilation(uri: Uri, quality: ExportQuality, format: ExportFormat) {
+    private fun runCompilation(uri: Uri, quality: ExportQuality, format: ExportFormat, transitionStyle: TransitionStyle) {
         lifecycleScope.launch {
             isBusy = true
             setUiBusy(true)
+            clearPendingCompilationPreview(deleteFile = true)
             clearStatusFeed("Starting")
             emitProgress("Analyzing number changes...", 0)
 
@@ -483,7 +572,8 @@ class MainActivity : AppCompatActivity() {
                     scanProfile.mode,
                     scanWindow,
                     selectedVideoRotationDegrees,
-                    scanProfile.label
+                    scanProfile.label,
+                    transitionStyle
                 ) { message, percent ->
                     emitProgress(message, (percent * 50 / 100).coerceIn(0, 50))
                 }
@@ -513,25 +603,21 @@ class MainActivity : AppCompatActivity() {
                 emitProgress("Preparing ${windows.size} trim/copy segments (${formatDurationMs(clipWindowMs)} source span)...", 55)
                 var compiledOutput: File? = null
                 val exportTiming = measureTimeMillis {
-                    compiledOutput = engine.renderCompilation(uri, windows, quality, format) { message, percent ->
+                    compiledOutput = engine.renderCompilation(uri, windows, quality, format, transitionStyle) { message, percent ->
                         emitProgress(message, percent)
                     }
                 }
                 timingBuckets["export"] = exportTiming
 
-                val saveTiming = measureTimeMillis {
-                    val output = compiledOutput ?: throw IllegalStateException("Compilation output missing")
-                    val saved = saveToPhoneStorage(output, format)
-                    emitProgress("Saved: $saved", 100)
-                }
-                timingBuckets["save"] = saveTiming
-                emitProgress("Export timing (ms): export=$exportTiming save=$saveTiming", 100)
+                val output = compiledOutput ?: throw IllegalStateException("Compilation output missing")
+                showPendingCompilationPreview(output, format)
+                emitProgress("Export timing (ms): preview=$exportTiming. Review preview, then save or discard.", 100)
                 emitProgress(
-                    "Performance summary: scan=${timingBuckets["scan"]}ms export=${timingBuckets["export"]}ms save=${timingBuckets["save"]}ms",
+                    "Performance summary: scan=${timingBuckets["scan"]}ms preview=${timingBuckets["export"]}ms",
                     100
                 )
                 emitProgress("Scan report stored: ${engine.latestScanReportPath}", 100)
-                Toast.makeText(this@MainActivity, "Export complete", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "Preview ready", Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
                 if (e !is CancellationException) {
                     Log.e(logTag, "Compilation failed", e)
@@ -689,6 +775,90 @@ class MainActivity : AppCompatActivity() {
         previewHandler.removeCallbacks(previewProgressUpdater)
     }
 
+    private val compilationPreviewProgressUpdater = object : Runnable {
+        override fun run() {
+            if (compilationPreview.isPlaying && compilationPreviewSeekBar.isEnabled && !isCompilationPreviewScrubbing) {
+                val current = compilationPreview.currentPosition
+                if (current >= 0 && current <= compilationPreviewSeekBar.max) {
+                    selectedCompilationPreviewMs = current
+                    if (!compilationPreviewSeekBar.isPressed) {
+                        compilationPreviewSeekBar.progress = current
+                    }
+                }
+            }
+            previewHandler.postDelayed(this, 250L)
+        }
+    }
+
+    private fun startCompilationPreviewProgressUpdates() {
+        stopCompilationPreviewProgressUpdates()
+        previewHandler.postDelayed(compilationPreviewProgressUpdater, 250L)
+    }
+
+    private fun stopCompilationPreviewProgressUpdates() {
+        previewHandler.removeCallbacks(compilationPreviewProgressUpdater)
+    }
+
+    private fun showPendingCompilationPreview(file: File, format: ExportFormat) {
+        pendingCompilationFile = file
+        pendingCompilationFormat = format
+        binding.compilationPreviewContainer.visibility = View.VISIBLE
+        compilationPreviewSeekBar.isEnabled = false
+        compilationPreviewSeekBar.progress = 0
+        selectedCompilationPreviewMs = 0
+        playCompilationPreviewButton.text = "Play"
+        playCompilationPreviewButton.isEnabled = true
+        saveCompilationButton.isEnabled = true
+        discardCompilationButton.isEnabled = true
+        compilationPreview.setVideoURI(Uri.fromFile(file))
+        compilationPreview.seekTo(0)
+        compilationPreview.pause()
+    }
+
+    private fun clearPendingCompilationPreview(deleteFile: Boolean) {
+        stopCompilationPreviewProgressUpdates()
+        runCatching { compilationPreview.stopPlayback() }
+        if (deleteFile) {
+            pendingCompilationFile?.delete()
+        }
+        pendingCompilationFile = null
+        pendingCompilationFormat = null
+        selectedCompilationPreviewMs = 0
+        compilationPreviewSeekBar.progress = 0
+        compilationPreviewSeekBar.isEnabled = false
+        playCompilationPreviewButton.text = "Play"
+        binding.compilationPreviewContainer.visibility = View.GONE
+    }
+
+    private fun savePendingCompilation() {
+        val output = pendingCompilationFile
+        val format = pendingCompilationFormat
+        if (output == null || format == null) {
+            emitProgress("No compilation preview is ready to save.", 100)
+            return
+        }
+
+        lifecycleScope.launch {
+            isBusy = true
+            setUiBusy(true)
+            try {
+                val saveTiming = measureTimeMillis {
+                    val saved = saveToPhoneStorage(output, format)
+                    emitProgress("Saved: $saved", 100)
+                }
+                emitProgress("Save timing (ms): save=$saveTiming", 100)
+                Toast.makeText(this@MainActivity, "Export saved", Toast.LENGTH_LONG).show()
+                clearPendingCompilationPreview(deleteFile = true)
+            } catch (e: Exception) {
+                Log.e(logTag, "Save failed", e)
+                emitProgress("Save failed: ${e.message ?: "failed"}", 100)
+            } finally {
+                isBusy = false
+                setUiBusy(false)
+            }
+        }
+    }
+
     private suspend fun saveToPhoneStorage(file: File, format: ExportFormat): String = withContext(Dispatchers.IO) {
         val filename = "compilation_${System.currentTimeMillis()}"
         val safeFormat = if (format == ExportFormat.Webm) ExportFormat.Mp4 else format
@@ -701,7 +871,7 @@ class MainActivity : AppCompatActivity() {
 
         val resolver: ContentResolver = contentResolver
         fun copyWithProgress(input: java.io.InputStream, out: java.io.OutputStream) {
-            val buffer = ByteArray(256 * 1024)
+            val buffer = ByteArray(1024 * 1024)
             var bytes = 0L
             var read: Int
             val sourceLength = file.length().coerceAtLeast(1L)
@@ -774,6 +944,10 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread {
             binding.processButton.isEnabled = !busy
             binding.selectButton.isEnabled = !busy
+            checkUpdatesButton.isEnabled = !busy
+            saveCompilationButton.isEnabled = !busy && pendingCompilationFile != null
+            discardCompilationButton.isEnabled = !busy && pendingCompilationFile != null
+            playCompilationPreviewButton.isEnabled = !busy && pendingCompilationFile != null
             binding.progressBar.visibility = if (busy) ProgressBar.VISIBLE else ProgressBar.INVISIBLE
             progressPercentText.visibility = View.VISIBLE
             statusFeedScroll.visibility = View.VISIBLE
@@ -1398,6 +1572,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         scanWindow: ScanWindow,
         sourceRotationDegrees: Int,
         scanProfileLabel: String,
+        transitionStyle: TransitionStyle,
         progress: (String, Int) -> Unit
     ): ScanFindResult = withContext(Dispatchers.IO) {
         Log.d(tag, "Starting scan for number transitions: $sourceUri")
@@ -1607,7 +1782,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             }
 
             Log.d(tag, "Detected transitions: ${transitions.size}")
-            val artifactPadMs = 1_500L
+            val artifactPadMs = transitionStyle.edgePaddingMs
             val rawSegments = transitions.map { t ->
                 SegmentWindow(
                     startMs = max(0L, t - 10_000L - artifactPadMs),
@@ -1615,9 +1790,9 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                 )
             }.sortedBy { it.startMs }
             val mergedTiming = measureTimeMillis {
-                mergeOverlapping(rawSegments)
+                mergeWithGap(rawSegments, transitionStyle.mergeGapMs)
             }
-            val merged = mergeOverlapping(rawSegments)
+            val merged = mergeWithGap(rawSegments, transitionStyle.mergeGapMs)
             timing.mergeMs = mergedTiming
             val report = ScanFindReport(
                 sourceUri = sourceUri.toString(),
@@ -1775,6 +1950,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         segments: List<SegmentWindow>,
         quality: ExportQuality,
         format: ExportFormat,
+        transitionStyle: TransitionStyle,
         progress: (String, Int) -> Unit
     ): File = withContext(Dispatchers.IO) {
         val cache = context.cacheDir
@@ -1782,9 +1958,9 @@ private class VideoCompilationEngine(private val context: MainActivity) {
 
         if (segments.isEmpty()) throw IllegalStateException("No segments to assemble")
         val output = File(cache, "compilation_${System.currentTimeMillis()}.${safeFormat.extension}")
-        progress("Using ${quality.label} profile", 56)
+        progress("Using ${quality.label} profile with ${transitionStyle.label}", 56)
         progress("Opening source for direct export", 57)
-        val alignedSegments = alignSegmentsToVideoSyncSamples(sourceUri, segments)
+        val alignedSegments = alignSegmentsToVideoSyncSamples(sourceUri, mergeWithGap(segments.sortedBy { it.startMs }, transitionStyle.mergeGapMs))
         materializeCompilation(sourceUri, alignedSegments, safeFormat, output) { message, percent ->
             progress(message, percent)
         }
@@ -2052,7 +2228,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
 
         muxer.start()
         val totalSegments = segments.size
-        val segmentBuffer = ByteBuffer.allocate(5 * 1024 * 1024)
+        val segmentBuffer = ByteBuffer.allocateDirect(16 * 1024 * 1024)
         val sampleInfo = MediaCodec.BufferInfo()
         val trackOutputOffsetUs = trackMap.keys.associateWith { 0L }.toMutableMap()
         var outputCursorUs = 0L
@@ -2106,7 +2282,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                     if (isProgressTrack) {
                         segTrackMaxUs = maxOf(segTrackMaxUs, outputPtsUs)
                         val now = SystemClock.elapsedRealtime()
-                        if (now - lastExportLogMs >= 250L) {
+                        if (now - lastExportLogMs >= 500L) {
                             val completedUs = (exportedUsEstimate + (segTrackMaxUs - outputCursorUs)).coerceAtMost(totalSourceUs)
                             val exportPercent = (60 + (completedUs * 35L / totalSourceUs).toInt()).coerceIn(60, 95)
                             val remaining = formatDurationUs(totalSourceUs - completedUs)
@@ -2178,12 +2354,17 @@ private class VideoCompilationEngine(private val context: MainActivity) {
     }
 
     private fun mergeOverlapping(input: List<SegmentWindow>): List<SegmentWindow> {
+        return mergeWithGap(input, 0L)
+    }
+
+    private fun mergeWithGap(input: List<SegmentWindow>, maxGapMs: Long): List<SegmentWindow> {
         if (input.isEmpty()) return emptyList()
         val merged = ArrayList<SegmentWindow>()
-        var current = input[0]
+        val sorted = input.sortedBy { it.startMs }
+        var current = sorted[0]
         for (i in 1 until input.size) {
-            val next = input[i]
-            if (next.startMs <= current.endMs) {
+            val next = sorted[i]
+            if (next.startMs <= current.endMs + maxGapMs) {
                 current = SegmentWindow(current.startMs, max(current.endMs, next.endMs))
             } else {
                 merged.add(current)
@@ -2270,6 +2451,11 @@ private data class ScanWindow(val xPercent: Float, val yPercent: Float, val widt
 private data class ScanProfile(val label: String, val frameStepMs: Long, val mode: ScanMode)
 private enum class ScanMode { Fast, Checkpoints3Min }
 private enum class RoiTouchMode { NONE, MOVE, RESIZE }
+
+private enum class TransitionStyle(val label: String, val edgePaddingMs: Long, val mergeGapMs: Long) {
+    Instant("Instant cuts", 0L, 0L),
+    Gradual("Gradual transitions", 3_000L, 2_000L)
+}
 
 private enum class ExportQuality(val label: String, val preset: String, val crf: Int, val extraVideoArgs: List<String>) {
     Low("Low (faster)", "ultrafast", 32, listOf()),
