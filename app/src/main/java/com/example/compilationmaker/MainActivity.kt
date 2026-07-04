@@ -1135,7 +1135,7 @@ class MainActivity : AppCompatActivity() {
             val releaseUrl = json.optString("html_url", "")
             val assets = json.optJSONArray("assets")
             val download = if (assets != null && assets.length() > 0) {
-                (assets.get(0) as? JSONObject)?.optString("browser_download_url", "")
+                (assets.get(0) as? JSONObject)?.optString("browser_download_url", "") ?: ""
             } else {
                 ""
             }
