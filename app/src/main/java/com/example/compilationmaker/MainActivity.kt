@@ -1275,6 +1275,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             val transitions = mutableListOf<Long>()
             val checkpointMs = frameStepMs.coerceAtLeast(1L)
             var previousNumber: Int? = null
+            var hasCapturedFirstOne = false
             val fastModeScaleWidthPx = when {
                 scanMode != ScanMode.Fast -> 0
                 frameStepMs <= 750L -> 240
@@ -1384,28 +1385,57 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                     previousSignature = signature.value
 
                     var nextNumber = detected
-                    didDetectChange = detected != null && previousNumber != null && detected != previousNumber
-                    if (didDetectChange) {
-                        val transitionMs = if (scanMode == ScanMode.Checkpoints3Min) {
-                            refineTransitionNearHit(
-                                retriever,
-                                max(0L, cursorMs - min(checkpointMs, 30_000L)),
-                                cursorMs,
-                                scanWindow,
-                                sourceRotationDegrees,
-                                previousNumber!!,
-                                timing
-                            )
-                        } else {
-                            cursorMs
+                    var transitionMs: Long? = null
+                    var transitionLabel = "Transition"
+                    if (detected != null && !hasCapturedFirstOne) {
+                        val firstOneSearchStartMs = when (scanMode) {
+                            ScanMode.Checkpoints3Min -> max(0L, cursorMs - checkpointMs)
+                            ScanMode.Fast -> max(0L, cursorMs - max(frameStepMs, 5_000L))
                         }
-                        transitions.add(transitionMs)
-                        val cutStartMs = max(0L, transitionMs - 10_000L)
-                        val cutEndMs = min(durationMs, transitionMs + 30_000L)
+                        val firstOneMs = locateFirstNumberAppearance(
+                            retriever,
+                            firstOneSearchStartMs,
+                            cursorMs,
+                            scanWindow,
+                            sourceRotationDegrees,
+                            targetNumber = 1,
+                            stepMs = if (scanMode == ScanMode.Checkpoints3Min) 1_000L else frameStepMs.coerceIn(250L, 1_000L),
+                            timing
+                        )
+                        if (firstOneMs != null) {
+                            transitionMs = firstOneMs
+                            transitionLabel = "First 1"
+                            hasCapturedFirstOne = true
+                            didDetectChange = true
+                        }
+                    }
+                    if (transitionMs == null) {
+                        didDetectChange = detected != null && previousNumber != null && detected != previousNumber
+                        if (didDetectChange) {
+                            transitionMs = if (scanMode == ScanMode.Checkpoints3Min) {
+                                refineTransitionNearHit(
+                                    retriever,
+                                    max(0L, cursorMs - min(checkpointMs, 30_000L)),
+                                    cursorMs,
+                                    scanWindow,
+                                    sourceRotationDegrees,
+                                    previousNumber!!,
+                                    timing
+                                )
+                            } else {
+                                cursorMs
+                            }
+                        }
+                    }
+                    if (transitionMs != null) {
+                        val transitionAtMs = transitionMs
+                        transitions.add(transitionAtMs)
+                        val cutStartMs = max(0L, transitionAtMs - 10_000L)
+                        val cutEndMs = min(durationMs, transitionAtMs + 30_000L)
                         nextNumber = detected
                         progress(
-                            "Transition at ${formatMs(transitionMs)}; cut ${formatMs(cutStartMs)} -> ${formatMs(cutEndMs)}",
-                            min(100, ((transitionMs.toFloat() / durationMs.toFloat()) * 100f + 1).toInt())
+                            "$transitionLabel at ${formatMs(transitionAtMs)}; cut ${formatMs(cutStartMs)} -> ${formatMs(cutEndMs)}",
+                            min(100, ((transitionAtMs.toFloat() / durationMs.toFloat()) * 100f + 1).toInt())
                         )
                     }
                     if (nextNumber != null) {
@@ -1464,6 +1494,68 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             recognizer.close()
             retriever.release()
         }
+    }
+
+    private suspend fun locateFirstNumberAppearance(
+        retriever: MediaMetadataRetriever,
+        startMs: Long,
+        hitMs: Long,
+        scanWindow: ScanWindow,
+        sourceRotationDegrees: Int,
+        targetNumber: Int,
+        stepMs: Long,
+        timing: ScanTimingSummary
+    ): Long? {
+        val safeStartMs = startMs.coerceAtLeast(0L)
+        val safeHitMs = hitMs.coerceAtLeast(safeStartMs)
+        val safeStepMs = stepMs.coerceAtLeast(250L)
+        var cursorMs = safeStartMs
+        var lastNotTargetMs = safeStartMs
+
+        while (cursorMs <= safeHitMs) {
+            val detected = detectNumberAt(retriever, cursorMs, scanWindow, sourceRotationDegrees, timing)
+            if (detected == targetNumber) {
+                return refineNumberAppearanceBetween(
+                    retriever,
+                    lastNotTargetMs,
+                    cursorMs,
+                    scanWindow,
+                    sourceRotationDegrees,
+                    targetNumber,
+                    timing
+                )
+            }
+            lastNotTargetMs = cursorMs
+            val nextCursorMs = min(safeHitMs, cursorMs + safeStepMs)
+            if (nextCursorMs == cursorMs) break
+            cursorMs = nextCursorMs
+        }
+        return null
+    }
+
+    private suspend fun refineNumberAppearanceBetween(
+        retriever: MediaMetadataRetriever,
+        lowerBoundMs: Long,
+        upperBoundMs: Long,
+        scanWindow: ScanWindow,
+        sourceRotationDegrees: Int,
+        targetNumber: Int,
+        timing: ScanTimingSummary
+    ): Long {
+        var lowerMs = lowerBoundMs
+        var upperMs = upperBoundMs
+
+        repeat(8) {
+            if (upperMs - lowerMs <= 250L) return@repeat
+            val midMs = lowerMs + (upperMs - lowerMs) / 2L
+            val detected = detectNumberAt(retriever, midMs, scanWindow, sourceRotationDegrees, timing)
+            if (detected == targetNumber) {
+                upperMs = midMs
+            } else {
+                lowerMs = midMs
+            }
+        }
+        return upperMs
     }
 
     private suspend fun refineTransitionNearHit(
