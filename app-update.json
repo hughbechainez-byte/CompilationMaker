@@ -1,8 +1,8 @@
 {
-  "version": "0.14.1",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.1",
+  "version": "0.14.2",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.2",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.1/CompilationMaker-v0.14.1.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.2/CompilationMaker-v0.14.2.apk"
   },
-  "notes": "Phase 14.1 fixes first-transition capture by anchoring the first compilation segment to the first OCR-detected number 1, then starting the cut about 10 seconds before it appears."
+  "notes": "Phase 14.2 changes Check for updates to stay inside the app: it checks the manifest, prompts when an update exists, downloads the APK in the background, and opens Android's installer without launching GitHub in a browser."
 }

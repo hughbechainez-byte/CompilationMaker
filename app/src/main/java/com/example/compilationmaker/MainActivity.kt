@@ -26,6 +26,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.MediaStore
+import android.provider.Settings
 import android.text.format.DateFormat
 import android.text.Editable
 import android.text.TextWatcher
@@ -48,10 +49,12 @@ import android.widget.Toast
 import android.widget.VideoView
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.compilationmaker.databinding.ActivityMainBinding
@@ -1053,7 +1056,15 @@ class MainActivity : AppCompatActivity() {
 
             updatePrefs.edit().putLong("last_update_check_ms", now).apply()
 
-            val info = withContext(Dispatchers.IO) { fetchUpdateInfo() } ?: return@launch
+            val info = withContext(Dispatchers.IO) { fetchUpdateInfo() }
+            if (info == null) {
+                if (force) {
+                    runOnUiThread {
+                        emitProgress("No update information found. Check connection and manifest URL.", 100)
+                    }
+                }
+                return@launch
+            }
             val latest = info.versionName
             val current = BuildConfig.VERSION_NAME.ifBlank { "0.0.0" }
             if (!isRemoteVersionNewer(latest, current)) {
@@ -1070,9 +1081,13 @@ class MainActivity : AppCompatActivity() {
                 return@launch
             }
             updatePrefs.edit().putString("notified_version", latest).apply()
-            notifyUserOfUpdate(info)
-            runOnUiThread {
-                emitProgress("Update ${info.versionName} available. Open updates notification to install.", 100)
+            if (force) {
+                showUpdateAvailableDialog(info)
+            } else {
+                notifyUserOfUpdate(info)
+                runOnUiThread {
+                    emitProgress("Update ${info.versionName} available. Tap Check for updates to install.", 100)
+                }
             }
         }
     }
@@ -1082,12 +1097,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val updateActionUrl = info.downloadUrl.ifEmpty { info.releaseUrl }
-        if (updateActionUrl.isBlank()) {
-            return
-        }
-        val uri = Uri.parse(updateActionUrl)
-        val updateIntent = Intent(Intent.ACTION_VIEW, uri)
+        val updateIntent = packageManager.getLaunchIntentForPackage(packageName)
+            ?: Intent(this, MainActivity::class.java)
+        updateIntent.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         val updatePendingIntent = PendingIntent.getActivity(
             this,
             0,
@@ -1101,7 +1113,7 @@ class MainActivity : AppCompatActivity() {
             .setStyle(
                 NotificationCompat.BigTextStyle()
                     .bigText(
-                        "New version ${info.versionName} is available. Tap to open and install."
+                        "New version ${info.versionName} is available. Open the app and tap Check for updates to install."
                             .plus(if (info.releaseNotes.isNotBlank()) "\n\n${info.releaseNotes}" else "")
                     )
             )
@@ -1110,6 +1122,135 @@ class MainActivity : AppCompatActivity() {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
         NotificationManagerCompat.from(this).notify(updateNotificationId, notification)
+    }
+
+    private fun showUpdateAvailableDialog(info: UpdateInfo) {
+        runOnUiThread {
+            AlertDialog.Builder(this)
+                .setTitle("Update ${info.versionName} available")
+                .setMessage(
+                    if (info.releaseNotes.isNotBlank()) {
+                        info.releaseNotes
+                    } else {
+                        "A newer version is ready to install."
+                    }
+                )
+                .setPositiveButton("Install") { _, _ ->
+                    downloadAndInstallUpdate(info)
+                }
+                .setNegativeButton("Later", null)
+                .show()
+            emitProgress("Update ${info.versionName} available.", 100)
+        }
+    }
+
+    private fun downloadAndInstallUpdate(info: UpdateInfo) {
+        if (info.downloadUrl.isBlank()) {
+            emitProgress("Update APK link missing from manifest.", 100)
+            return
+        }
+        lifecycleScope.launch {
+            emitProgress("Downloading update ${info.versionName} in the background...", 100)
+            val apk = withContext(Dispatchers.IO) { downloadUpdateApk(info) }
+            if (apk == null) {
+                emitProgress("Update download failed.", 100)
+                return@launch
+            }
+            emitProgress("Update downloaded. Opening Android installer.", 100)
+            installDownloadedApk(apk)
+        }
+    }
+
+    private fun downloadUpdateApk(info: UpdateInfo): File? {
+        val targetDir = File(cacheDir, "updates").apply { mkdirs() }
+        targetDir.listFiles()
+            ?.filter { it.extension.equals("apk", ignoreCase = true) }
+            ?.forEach { it.delete() }
+        val safeVersion = info.versionName.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val target = File(targetDir, "CompilationMaker-$safeVersion.apk")
+        val connection = try {
+            java.net.URL(info.downloadUrl).openConnection() as java.net.HttpURLConnection
+        } catch (e: Exception) {
+            Log.w(logTag, "Unable to open update download connection", e)
+            return null
+        }
+
+        return try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 30_000
+            connection.setRequestProperty("Accept", "application/vnd.android.package-archive,*/*")
+            connection.connect()
+            if (connection.responseCode !in 200..299) {
+                Log.w(logTag, "Update download failed with HTTP ${connection.responseCode}")
+                return null
+            }
+            connection.inputStream.use { input ->
+                target.outputStream().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                    }
+                }
+            }
+            if (target.length() > 0L) target else null
+        } catch (e: Exception) {
+            Log.w(logTag, "Update download failed", e)
+            target.delete()
+            null
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun installDownloadedApk(apk: File) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            showInstallPermissionDialog()
+            return
+        }
+
+        val apkUri = FileProvider.getUriForFile(
+            this,
+            "$packageName.updateprovider",
+            apk
+        )
+        val installIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(apkUri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        packageManager.queryIntentActivities(installIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            .forEach { resolveInfo ->
+                grantUriPermission(
+                    resolveInfo.activityInfo.packageName,
+                    apkUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+        try {
+            startActivity(installIntent)
+        } catch (e: Exception) {
+            Log.w(logTag, "Unable to open Android package installer", e)
+            emitProgress("Could not open Android installer for downloaded update.", 100)
+        }
+    }
+
+    private fun showInstallPermissionDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Allow app updates")
+            .setMessage("Android needs permission to install updates downloaded by CompilationMaker. Enable Allow from this source, then tap Check for updates again.")
+            .setPositiveButton("Open settings") { _, _ ->
+                val settingsIntent = Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:$packageName")
+                )
+                startActivity(settingsIntent)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+        emitProgress("Enable install permission, then check for updates again.", 100)
     }
 
     private fun ensureUpdateNotificationChannel() {
