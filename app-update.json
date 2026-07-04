@@ -1,8 +1,8 @@
 {
-  "version": "0.13.1",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.13.1",
+  "version": "0.13.2",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.13.2",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.13.1/CompilationMaker-v0.13.1.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.13.2/CompilationMaker-v0.13.2.apk"
   },
-  "notes": "Phase 13.1 fixes in-app update manifest fetching by reading the raw GitHub manifest first, falling back to the GitHub contents API, and showing forced update checks even after a prior notification."
+  "notes": "Phase 13.2 fixes GitHub release APK installation by publishing the debug-signed installable APK instead of an unsigned release artifact."
 }
