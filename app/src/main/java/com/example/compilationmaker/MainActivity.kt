@@ -201,6 +201,8 @@ class MainActivity : AppCompatActivity() {
     private val progressNotificationId = 6106
     private val updateNotificationChannelId = "compilation_updates"
     private val updateNotificationId = 6110
+    private val updateManifestRawEndpoint =
+        "https://raw.githubusercontent.com/hughbechainez-byte/CompilationMaker/master/app-update.json"
     private val updateManifestBlobEndpoint =
         "https://api.github.com/repos/hughbechainez-byte/CompilationMaker/contents/app-update.json"
     private val fallbackReleaseEndpoint =
@@ -1064,7 +1066,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             val notifiedVersion = updatePrefs.getString("notified_version", "")
-            if (notifiedVersion == latest) {
+            if (!force && notifiedVersion == latest) {
                 return@launch
             }
             updatePrefs.edit().putString("notified_version", latest).apply()
@@ -1154,36 +1156,41 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun fetchManifestUpdateInfo(): UpdateInfo? {
-        return try {
-            val response = fetchUrlText(updateManifestBlobEndpoint) ?: return null
-            val top = JSONObject(response)
-            val encoding = top.optString("encoding", "")
-            val raw = top.optString("content", "")
-            val manifestContent = if (encoding == "base64") {
-                String(Base64.decode(raw.replace("\\s".toRegex(), ""), Base64.DEFAULT))
-            } else {
-                raw
+        for (endpoint in listOf(updateManifestRawEndpoint, updateManifestBlobEndpoint)) {
+            try {
+                val response = fetchUrlText(endpoint) ?: continue
+                val manifest = parseUpdateManifest(response) ?: continue
+                val version = manifest.optString("version", "")
+                    .ifBlank { manifest.optString("tag", "") }
+                    .ifBlank { manifest.optString("name", "") }
+                    .ifBlank { "0.0.0" }
+                val apkUrl = (manifest.optJSONObject("apk")?.optString("url", "") ?: "")
+                    .ifBlank { manifest.optString("apkUrl", "") }
+                val releaseUrl = manifest.optString("releaseUrl", "")
+                    .ifBlank { fallbackReleaseEndpoint }
+                val notes = manifest.optString("notes", "").ifBlank { manifest.optString("changelog", "") }
+                return UpdateInfo(
+                    version,
+                    releaseUrl,
+                    apkUrl,
+                    notes
+                )
+            } catch (_: Exception) {
+                continue
             }
-            val manifest = JSONObject(manifestContent)
-            val version = manifest.optString("version", "")
-                .ifBlank { manifest.optString("tag", "") }
-                .ifBlank { manifest.optString("name", "") }
-                .ifBlank { "0.0.0" }
-            val apkUrl = (manifest.optJSONObject("apk")?.optString("url", "") ?: "")
-                .ifBlank { manifest.optString("apkUrl", "") }
-            val releaseUrl = manifest.optString("releaseUrl", "")
-                .ifBlank { top.optString("download_url", "") }
-                .ifBlank { fallbackReleaseEndpoint }
-            val notes = manifest.optString("notes", "").ifBlank { manifest.optString("changelog", "") }
-            UpdateInfo(
-                version,
-                releaseUrl,
-                apkUrl,
-                notes
-            )
-        } catch (_: Exception) {
-            null
         }
+        return null
+    }
+
+    private fun parseUpdateManifest(response: String): JSONObject? {
+        val top = JSONObject(response)
+        val encoding = top.optString("encoding", "")
+        val raw = top.optString("content", "")
+        if (encoding == "base64" && raw.isNotBlank()) {
+            val manifestContent = String(Base64.decode(raw.replace("\\s".toRegex(), ""), Base64.DEFAULT))
+            return JSONObject(manifestContent)
+        }
+        return top
     }
 
     private fun isRemoteVersionNewer(remote: String, current: String): Boolean {
