@@ -1,8 +1,8 @@
 {
-  "version": "0.14.4",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.4",
+  "version": "0.14.5",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.5",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.4/CompilationMaker-v0.14.4.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.5/CompilationMaker-v0.14.5.apk"
   },
-  "notes": "Phase 14.4 updates transition localization with visual change-map candidate scanning, OCR-confirmed checkpoints, and boundary refinement to find number transitions closer to the actual number-change timestamp."
+  "notes": "Phase 14.5 adds faster scan-path execution with adaptive sampling, scan/ocr budgets, and reduced-resolution OCR passes while preserving transition-localization accuracy."
 }
