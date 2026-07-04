@@ -25,15 +25,15 @@ jobs:
       - name: Grant execute for Gradle wrapper
         run: chmod +x ./gradlew
 
-      - name: Build installable debug APK
+      - name: Build signed release APK
         run: |
-          ./gradlew :app:assembleDebug
+          ./gradlew :app:assembleRelease
 
       - name: Locate APK artifact
         id: artifact
         run: |
           TAG_NAME="${GITHUB_REF_NAME}"
-          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
           if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
             echo "APK not found in app/build/outputs"
             echo "Contents of app/build/outputs/apk:" 
@@ -41,6 +41,8 @@ jobs:
             exit 1
           fi
           echo "Found APK: $APK_PATH"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort | tail -n 1)"
+          "$APKSIGNER" verify --print-certs "$APK_PATH"
           mkdir -p dist
           cp "$APK_PATH" "dist/CompilationMaker-${TAG_NAME}.apk"
           echo "apk_path=dist/CompilationMaker-${TAG_NAME}.apk" >> "$GITHUB_OUTPUT"

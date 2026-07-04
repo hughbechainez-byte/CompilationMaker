@@ -1,8 +1,8 @@
 {
-  "version": "0.13.2",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.13.2",
+  "version": "0.13.3",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.13.3",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.13.2/CompilationMaker-v0.13.2.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.13.3/CompilationMaker-v0.13.3.apk"
   },
-  "notes": "Phase 13.2 fixes GitHub release APK installation by publishing the debug-signed installable APK instead of an unsigned release artifact."
+  "notes": "Phase 13.3 fixes Android update installs by signing GitHub release APKs with the same stable sideload certificate used by earlier local installs."
 }

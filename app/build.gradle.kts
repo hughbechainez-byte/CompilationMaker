@@ -7,12 +7,21 @@ android {
     namespace = "com.example.compilationmaker"
     compileSdk = 35
 
+    signingConfigs {
+        create("sideloadUpdate") {
+            storeFile = rootProject.file("keystores/compilationmaker-update.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     defaultConfig {
         applicationId = "com.example.compilationmaker"
         minSdk = 24
         targetSdk = 35
-        versionCode = 15
-        versionName = "0.13.2"
+        versionCode = 16
+        versionName = "0.13.3"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -20,7 +29,12 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("sideloadUpdate")
+        }
+
         release {
+            signingConfig = signingConfigs.getByName("sideloadUpdate")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
