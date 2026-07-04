@@ -1,8 +1,8 @@
 {
-  "version": "0.11.0",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/latest",
+  "version": "0.13.0",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.13.0",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.11.0/app-debug.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.13.0/CompilationMaker-v0.13.0.apk"
   },
-  "notes": "Phase 11 manifest+release automation enabled. APK built from tag and attached to each GitHub release."
+  "notes": "Phase 13 sync-safe export aligns section cuts to video keyframes to reduce transition distortion/artifacting."
 }

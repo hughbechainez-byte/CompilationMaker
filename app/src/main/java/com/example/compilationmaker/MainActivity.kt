@@ -1429,7 +1429,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             }
 
             Log.d(tag, "Detected transitions: ${transitions.size}")
-            val artifactPadMs = 500L
+            val artifactPadMs = 1_500L
             val rawSegments = transitions.map { t ->
                 SegmentWindow(
                     startMs = max(0L, t - 10_000L - artifactPadMs),
@@ -1544,7 +1544,8 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         val output = File(cache, "compilation_${System.currentTimeMillis()}.${safeFormat.extension}")
         progress("Using ${quality.label} profile", 56)
         progress("Opening source for direct export", 57)
-        materializeCompilation(sourceUri, segments, safeFormat, output) { message, percent ->
+        val alignedSegments = alignSegmentsToVideoSyncSamples(sourceUri, segments)
+        materializeCompilation(sourceUri, alignedSegments, safeFormat, output) { message, percent ->
             progress(message, percent)
         }
         progress("Compilation ready to save", 94)
@@ -1900,6 +1901,40 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         muxer.stop()
         muxer.release()
         extractor.release()
+    }
+
+    private fun alignSegmentsToVideoSyncSamples(
+        sourceUri: Uri,
+        segments: List<SegmentWindow>
+    ): List<SegmentWindow> {
+        if (segments.isEmpty()) return segments
+
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(context, sourceUri, null)
+            val videoTrackIndex = (0 until extractor.trackCount).firstOrNull { trackIndex ->
+                extractor.getTrackFormat(trackIndex).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+            } ?: return segments
+
+            extractor.selectTrack(videoTrackIndex)
+            val aligned = segments.map { segment ->
+                val requestedStartUs = segment.startMs * 1000L
+                extractor.seekTo(requestedStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                val syncSampleUs = extractor.sampleTime
+                val alignedStartMs = if (syncSampleUs >= 0L && syncSampleUs <= requestedStartUs) {
+                    syncSampleUs / 1000L
+                } else {
+                    segment.startMs
+                }
+                SegmentWindow(alignedStartMs, segment.endMs)
+            }.sortedBy { it.startMs }
+            mergeOverlapping(aligned)
+        } catch (e: Exception) {
+            Log.w(tag, "Unable to align export segments to video sync samples", e)
+            segments
+        } finally {
+            extractor.release()
+        }
     }
 
     private fun mergeOverlapping(input: List<SegmentWindow>): List<SegmentWindow> {
