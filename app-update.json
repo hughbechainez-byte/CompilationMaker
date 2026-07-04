@@ -1,8 +1,8 @@
 {
-  "version": "0.14.5",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.5",
+  "version": "0.14.6",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.6",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.5/CompilationMaker-v0.14.5.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.6/CompilationMaker-v0.14.6.apk"
   },
-  "notes": "Phase 14.5 adds faster scan-path execution with adaptive sampling, scan/ocr budgets, and reduced-resolution OCR passes while preserving transition-localization accuracy."
+  "notes": "Release 14.6 hardens app-side update resolution to install release APK assets only and keeps APK-first release generation across GitHub releases."
 }

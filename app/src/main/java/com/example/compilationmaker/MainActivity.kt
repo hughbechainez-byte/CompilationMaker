@@ -1451,11 +1451,7 @@ class MainActivity : AppCompatActivity() {
                 .ifBlank { "0.0.0" }
             val releaseUrl = json.optString("html_url", "")
             val assets = json.optJSONArray("assets")
-            val download = if (assets != null && assets.length() > 0) {
-                (assets.get(0) as? JSONObject)?.optString("browser_download_url", "") ?: ""
-            } else {
-                ""
-            }
+            val download = selectReleaseApkUrl(assets)
             UpdateInfo(
                 version,
                 releaseUrl,
@@ -1508,6 +1504,32 @@ class MainActivity : AppCompatActivity() {
         return top
     }
 
+    private fun selectReleaseApkUrl(assets: org.json.JSONArray?): String {
+        if (assets == null || assets.length() == 0) return ""
+
+        var fallbackApkLikeUrl = ""
+        var fallbackContentTypeUrl = ""
+
+        for (i in 0 until assets.length()) {
+            val asset = assets.optJSONObject(i) ?: continue
+            val name = asset.optString("name", "")
+            val downloadUrl = asset.optString("browser_download_url", "").ifBlank { asset.optString("url", "") }
+            if (downloadUrl.isBlank()) continue
+
+            if (name.endsWith(".apk", ignoreCase = true)) {
+                return downloadUrl
+            }
+            if (fallbackApkLikeUrl.isBlank() && name.contains("compilationmaker", ignoreCase = true)) {
+                fallbackApkLikeUrl = downloadUrl
+            }
+            if (fallbackContentTypeUrl.isBlank() && asset.optString("content_type", "").equals("application/vnd.android.package-archive", true)) {
+                fallbackContentTypeUrl = downloadUrl
+            }
+        }
+
+        return fallbackApkLikeUrl.ifBlank { fallbackContentTypeUrl }
+    }
+
     private fun isRemoteVersionNewer(remote: String, current: String): Boolean {
         val remoteNormalized = remote.trim().trimStart('v', 'V').split(".").map { it.toIntOrNull() ?: 0 }
         val currentNormalized = current.trim().trimStart('v', 'V').split(".").map { it.toIntOrNull() ?: 0 }
@@ -1532,6 +1554,7 @@ class MainActivity : AppCompatActivity() {
 
         return try {
             connection.requestMethod = "GET"
+            connection.setRequestProperty("User-Agent", "CompilationMaker-UpdateChecker")
             connection.connectTimeout = 5000
             connection.readTimeout = 5000
             connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
