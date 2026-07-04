@@ -202,13 +202,12 @@ class MainActivity : AppCompatActivity() {
     private val formatOptions = arrayOf(ExportFormat.Mp4, ExportFormat.Webm, ExportFormat.Mov)
     private val transitionStyleOptions = arrayOf(TransitionStyle.Instant, TransitionStyle.Gradual)
     private val scanProfiles = arrayOf(
-        ScanProfile("Very fast (0.5s)", 500L, ScanMode.Fast),
-        ScanProfile("Balanced (1s)", 1_000L, ScanMode.Fast),
-        ScanProfile("Slow (2s)", 2_000L, ScanMode.Fast),
-        ScanProfile("Very slow (4s)", 4_000L, ScanMode.Fast),
-        ScanProfile("3-minute checkpoints", 180_000L, ScanMode.Checkpoints3Min),
-        ScanProfile("4-minute checkpoints", 240_000L, ScanMode.Checkpoints3Min),
-        ScanProfile("5-minute checkpoints", 300_000L, ScanMode.Checkpoints3Min)
+        ScanProfile("Fast change map (0.5s)", 500L, ScanMode.FastChangeMap),
+        ScanProfile("Balanced change map (1s)", 1_000L, ScanMode.FastChangeMap),
+        ScanProfile("Accurate change map (500ms)", 500L, ScanMode.AccurateChangeMap),
+        ScanProfile("Accurate (250ms)", 250L, ScanMode.AccurateChangeMap),
+        ScanProfile("Dense local refine (250ms)", 250L, ScanMode.DenseRefine),
+        ScanProfile("Dense local refine (150ms)", 150L, ScanMode.DenseRefine)
     )
     private val defaultScanWindow = ScanWindow(0.0f, 0.8f, 0.10f, 0.30f)
     private val progressNotificationChannelId = "compilation_progress"
@@ -517,7 +516,7 @@ class MainActivity : AppCompatActivity() {
             android.R.layout.simple_spinner_item,
             scanProfiles.map { it.label },
         )
-        scanSpeedSpinner.setSelection(4, false)
+        scanSpeedSpinner.setSelection(1, false)
         transitionStyleSpinner.adapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_item,
@@ -1579,211 +1578,261 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         val retriever = android.media.MediaMetadataRetriever().apply {
             setDataSource(context, sourceUri)
         }
-            val timing = ScanTimingSummary()
-            val sourceWidthPx = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
-            val sourceHeightPx = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+        val timing = ScanTimingSummary()
+        val sourceWidthPx = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+        val sourceHeightPx = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+
+        val scanConfig = when (scanMode) {
+            ScanMode.FastChangeMap -> ChangeMapConfig(
+                sampleStepMs = frameStepMs.coerceAtLeast(500L),
+                signatureScaleWidthPx = if (frameStepMs <= 750L) 220 else 280,
+                candidatePadMs = 3_000L,
+                candidateMergeGapMs = 1_200L,
+                changeThreshold = 7.2f,
+                periodicProbeMs = 2_800L,
+                neighborhoodStepMs = 500L,
+                refineWindowMs = 2_500L,
+                refineIterations = 10,
+                dedupeMs = 1_250L,
+                prefirstProbeMs = 2_500L,
+            )
+            ScanMode.AccurateChangeMap -> ChangeMapConfig(
+                sampleStepMs = frameStepMs.coerceAtLeast(250L),
+                signatureScaleWidthPx = if (frameStepMs <= 500L) 260 else 320,
+                candidatePadMs = 4_000L,
+                candidateMergeGapMs = 1_000L,
+                changeThreshold = 6.2f,
+                periodicProbeMs = 2_000L,
+                neighborhoodStepMs = 300L,
+                refineWindowMs = 3_500L,
+                refineIterations = 12,
+                dedupeMs = 900L,
+                prefirstProbeMs = 3_500L,
+            )
+            ScanMode.DenseRefine -> ChangeMapConfig(
+                sampleStepMs = frameStepMs.coerceAtLeast(150L),
+                signatureScaleWidthPx = 300,
+                candidatePadMs = 4_500L,
+                candidateMergeGapMs = 900L,
+                changeThreshold = 5.5f,
+                periodicProbeMs = 1_500L,
+                neighborhoodStepMs = 250L,
+                refineWindowMs = 4_000L,
+                refineIterations = 14,
+                dedupeMs = 650L,
+                prefirstProbeMs = 3_500L,
+            )
+        }
 
         try {
             val durationMs = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
                 ?: throw IllegalStateException("Could not read duration")
             if (durationMs <= 0L) return@withContext ScanFindResult(emptyList(), timing)
 
-            val transitions = mutableListOf<Long>()
-            val checkpointMs = frameStepMs.coerceAtLeast(1L)
-            var previousNumber: Int? = null
-            var hasCapturedFirstOne = false
-            val fastModeScaleWidthPx = when {
-                scanMode != ScanMode.Fast -> 0
-                frameStepMs <= 750L -> 240
-                else -> 300
-            }
-            var previousSignature: RoiSignature? = null
-            var framesSinceRecognition = 0
+            val candidateWindows = ArrayList<TransitionCandidateWindow>()
             var cursorMs = 0L
-            var checkpointCount = 0
+            var previousSignature: RoiSignature? = null
+            var msSinceLastCandidate = Long.MAX_VALUE
+
             while (cursorMs <= durationMs) {
                 if (!coroutineContext.isActive) {
                     return@withContext ScanFindResult(emptyList(), timing)
                 }
+
                 val percent = ((cursorMs.toFloat() / durationMs.toFloat()) * 100f).toInt().coerceIn(0, 100)
                 val elapsedSeconds = String.format(Locale.US, "%.1f", cursorMs / 1000f)
                 val totalSeconds = String.format(Locale.US, "%.1f", durationMs / 1000f)
-                if (scanMode == ScanMode.Checkpoints3Min) {
-                    progress("Checkpoint $checkpointCount at ${elapsedSeconds}s (${percent}%, interval ${frameStepMs / 1000}s)", percent)
-                } else {
-                    progress("Scanning timeline ${elapsedSeconds}s / ${totalSeconds}s (${percent}%, step ${frameStepMs}ms)", percent)
-                }
+                progress("Scanning timeline ${elapsedSeconds}s / ${totalSeconds}s (${percent}%, step ${scanConfig.sampleStepMs}ms)", percent)
 
-                var frame: Bitmap?
-                val decodeMs = measureTimeMillis {
-                    frame = getAnalysisFrameAtTime(
-                        retriever,
-                        cursorMs,
-                        fastModeScaleWidthPx,
-                        sourceRotationDegrees,
-                        sourceWidthPx,
-                        sourceHeightPx
-                    )
-                }
-                timing.decodeMs += decodeMs
+                val startDecodeMs = SystemClock.elapsedRealtime()
+                val frame = getAnalysisFrameAtTime(
+                    retriever,
+                    cursorMs,
+                    scanConfig.signatureScaleWidthPx,
+                    sourceRotationDegrees,
+                    sourceWidthPx,
+                    sourceHeightPx
+                )
+                timing.decodeMs += SystemClock.elapsedRealtime() - startDecodeMs
+
                 if (frame == null) {
-                    cursorMs = when (scanMode) {
-                        ScanMode.Fast -> cursorMs + frameStepMs
-                        ScanMode.Checkpoints3Min -> {
-                            if (frameStepMs <= 0L) break
-                            (cursorMs / checkpointMs + 1) * checkpointMs
-                        }
-                    }
-                    checkpointCount++
+                    cursorMs += scanConfig.sampleStepMs
                     continue
                 }
 
-                var didDetectChange = false
-                val frameBitmap = frame
-                if (frameBitmap == null) {
-                    cursorMs = when (scanMode) {
-                        ScanMode.Fast -> cursorMs + frameStepMs
-                        ScanMode.Checkpoints3Min -> {
-                            if (frameStepMs <= 0L) break
-                            (cursorMs / checkpointMs + 1) * checkpointMs
-                        }
-                    }
-                    checkpointCount++
-                    continue
-                }
                 try {
-                    val signature = measureTimeMillisWithResult {
-                        computeRoiSignature(frameBitmap, scanWindow, sourceRotationDegrees)
-                    }
-                    timing.preprocessMs += signature.elapsedMs
-                    val shouldRecognize = when (scanMode) {
-                        ScanMode.Checkpoints3Min -> true
-                        ScanMode.Fast -> {
-                            val changed = previousSignature?.let { roiDifference(it, signature.value) >= 7.5f } ?: true
-                            changed || framesSinceRecognition >= max(1, 5_000L / frameStepMs).toInt()
-                        }
-                    }
-                    val detected = if (shouldRecognize) {
-                        framesSinceRecognition = 0
-                        var ocrFrame: Bitmap? = null
-                        var mustRecycleOcrFrame = false
-                        try {
-                            if (fastModeScaleWidthPx > 0) {
-                                ocrFrame = getAnalysisFrameAtTime(
-                                    retriever,
-                                    cursorMs,
-                                    0,
-                                    sourceRotationDegrees,
-                                    sourceWidthPx,
-                                    sourceHeightPx
-                                )
-                                if (ocrFrame != null) {
-                                    mustRecycleOcrFrame = true
-                                }
-                            }
-                            val detection = detectCornerNumberWithTimings(ocrFrame ?: frameBitmap, scanWindow, sourceRotationDegrees)
-                            timing.cropMs += detection.cropMs
-                            timing.preprocessMs += detection.preprocessMs
-                            timing.ocrMs += detection.ocrMs
-                            detection.value
-                        } catch (e: Exception) {
-                            Log.w(tag, "OCR failed at ${cursorMs}ms", e)
-                            null
-                        } finally {
-                            if (mustRecycleOcrFrame) {
-                                ocrFrame?.recycle()
-                            }
-                        }
-                    } else {
-                        framesSinceRecognition++
-                        previousNumber
-                    }
-                    previousSignature = signature.value
-
-                    var nextNumber = detected
-                    var transitionMs: Long? = null
-                    var transitionLabel = "Transition"
-                    if (detected != null && !hasCapturedFirstOne) {
-                        val firstOneSearchStartMs = when (scanMode) {
-                            ScanMode.Checkpoints3Min -> max(0L, cursorMs - checkpointMs)
-                            ScanMode.Fast -> max(0L, cursorMs - max(frameStepMs, 5_000L))
-                        }
-                        val firstOneMs = locateFirstNumberAppearance(
-                            retriever,
-                            firstOneSearchStartMs,
-                            cursorMs,
-                            scanWindow,
-                            sourceRotationDegrees,
-                            targetNumber = 1,
-                            stepMs = if (scanMode == ScanMode.Checkpoints3Min) 1_000L else frameStepMs.coerceIn(250L, 1_000L),
-                            timing
-                        )
-                        if (firstOneMs != null) {
-                            transitionMs = firstOneMs
-                            transitionLabel = "First 1"
-                            hasCapturedFirstOne = true
-                            didDetectChange = true
-                        }
-                    }
-                    if (transitionMs == null) {
-                        didDetectChange = detected != null && previousNumber != null && detected != previousNumber
-                        if (didDetectChange) {
-                            transitionMs = if (scanMode == ScanMode.Checkpoints3Min) {
-                                refineTransitionNearHit(
-                                    retriever,
-                                    max(0L, cursorMs - min(checkpointMs, 30_000L)),
-                                    cursorMs,
-                                    scanWindow,
-                                    sourceRotationDegrees,
-                                    previousNumber!!,
-                                    timing
+                    val signature = computeRoiSignature(frame, scanWindow, sourceRotationDegrees)
+                    val signatureDelta = previousSignature?.let { roiDifference(it, signature) } ?: 0f
+                    val shouldProbe = previousSignature == null ||
+                        signatureDelta >= scanConfig.changeThreshold ||
+                        msSinceLastCandidate >= scanConfig.periodicProbeMs
+                    if (shouldProbe) {
+                        val padStart = max(0L, cursorMs - scanConfig.candidatePadMs)
+                        val padEnd = min(durationMs, cursorMs + scanConfig.candidatePadMs)
+                        if (candidateWindows.isNotEmpty()) {
+                            val last = candidateWindows.last()
+                            if (padStart <= last.endMs + scanConfig.candidateMergeGapMs) {
+                                candidateWindows[candidateWindows.lastIndex] = last.copy(
+                                    startMs = min(last.startMs, padStart),
+                                    endMs = max(last.endMs, padEnd),
+                                    seedMs = (last.seedMs + cursorMs) / 2L,
+                                    peakScore = max(last.peakScore, signatureDelta)
                                 )
                             } else {
-                                cursorMs
-                            }
-                        }
-                    }
-                    if (transitionMs != null) {
-                        val transitionAtMs = transitionMs
-                        transitions.add(transitionAtMs)
-                        val cutStartMs = max(0L, transitionAtMs - 10_000L)
-                        val cutEndMs = min(durationMs, transitionAtMs + 30_000L)
-                        nextNumber = detected
-                        progress(
-                            "$transitionLabel at ${formatMs(transitionAtMs)}; cut ${formatMs(cutStartMs)} -> ${formatMs(cutEndMs)}",
-                            min(100, ((transitionAtMs.toFloat() / durationMs.toFloat()) * 100f + 1).toInt())
-                        )
-                    }
-                    if (nextNumber != null) {
-                        previousNumber = nextNumber
-                    }
-                } finally {
-                    frameBitmap.recycle()
-                }
-
-                cursorMs = when (scanMode) {
-                    ScanMode.Fast -> cursorMs + frameStepMs
-                    ScanMode.Checkpoints3Min -> {
-                        if (didDetectChange) {
-                            val afterMarkMs = cursorMs + 30_000L
-                            val nextAlignedCheckpoint = ((cursorMs / checkpointMs) + 1) * checkpointMs
-                            if (nextAlignedCheckpoint > afterMarkMs) {
-                                nextAlignedCheckpoint
-                            } else {
-                                afterMarkMs
+                                candidateWindows.add(
+                                    TransitionCandidateWindow(
+                                        startMs = padStart,
+                                        endMs = padEnd,
+                                        seedMs = cursorMs,
+                                        peakScore = signatureDelta
+                                    )
+                                )
                             }
                         } else {
-                            if (frameStepMs <= 0L) break
-                            (cursorMs / checkpointMs + 1) * checkpointMs
+                            candidateWindows.add(
+                                TransitionCandidateWindow(
+                                    startMs = padStart,
+                                    endMs = padEnd,
+                                    seedMs = cursorMs,
+                                    peakScore = signatureDelta
+                                )
+                            )
                         }
+                        msSinceLastCandidate = 0L
+                    } else {
+                        msSinceLastCandidate += scanConfig.sampleStepMs
                     }
+                    previousSignature = signature
+                } finally {
+                    frame.recycle()
                 }
-                checkpointCount++
+
+                cursorMs += scanConfig.sampleStepMs
             }
 
-            Log.d(tag, "Detected transitions: ${transitions.size}")
+            if (candidateWindows.isEmpty()) {
+                progress("No transition candidates found in visual pass; using fallback pass", 45)
+            } else {
+                progress("Candidate windows: ${candidateWindows.size}", 45)
+            }
+
+            var hasCapturedFirstOne = false
+            val uniqueTransitions = ArrayList<Long>()
+            for ((index, candidate) in candidateWindows.withIndex()) {
+                if (!coroutineContext.isActive) {
+                    return@withContext ScanFindResult(emptyList(), timing)
+                }
+                val candidateStart = max(0L, candidate.startMs)
+                val candidateEnd = min(durationMs, candidate.endMs)
+                val sampleStart = max(0L, candidateStart - scanConfig.prefirstProbeMs)
+                val sampleEnd = min(durationMs, candidateEnd + scanConfig.prefirstProbeMs)
+                val centerMs = candidate.seedMs.coerceIn(sampleStart, sampleEnd)
+
+                val beforeNumber = detectNumberInRange(
+                    retriever = retriever,
+                    startMs = sampleStart,
+                    endMs = centerMs,
+                    stepMs = scanConfig.neighborhoodStepMs,
+                    scanWindow = scanWindow,
+                    sourceRotationDegrees = sourceRotationDegrees,
+                    timing = timing
+                )
+                val afterNumber = detectNumberInRange(
+                    retriever = retriever,
+                    startMs = centerMs,
+                    endMs = sampleEnd,
+                    stepMs = scanConfig.neighborhoodStepMs,
+                    scanWindow = scanWindow,
+                    sourceRotationDegrees = sourceRotationDegrees,
+                    timing = timing
+                )
+                var transitionMs: Long? = null
+                var transitionLabel = "Transition"
+                var transitionTargetNumber: Int? = afterNumber
+
+                if (!hasCapturedFirstOne && afterNumber == 1 && beforeNumber != 1) {
+                    val firstOneMs = locateFirstNumberAppearance(
+                        retriever = retriever,
+                        startMs = sampleStart,
+                        hitMs = sampleEnd,
+                        scanWindow = scanWindow,
+                        sourceRotationDegrees = sourceRotationDegrees,
+                        targetNumber = 1,
+                        stepMs = min(1_000L, scanConfig.sampleStepMs),
+                        timing = timing
+                    )
+                    if (firstOneMs != null) {
+                        transitionMs = firstOneMs
+                        transitionLabel = "First 1"
+                        transitionTargetNumber = 1
+                        hasCapturedFirstOne = true
+                    }
+                }
+
+                if (transitionMs == null && beforeNumber != null && afterNumber != null && beforeNumber != afterNumber) {
+                    val refined = refineTransitionBoundary(
+                        retriever = retriever,
+                        startMs = sampleStart,
+                        endMs = sampleEnd,
+                        beforeNumber = beforeNumber,
+                        afterNumber = afterNumber,
+                        scanWindow = scanWindow,
+                        sourceRotationDegrees = sourceRotationDegrees,
+                        timing = timing,
+                        sampleStepMs = scanConfig.neighborhoodStepMs,
+                        iterations = scanConfig.refineIterations,
+                        windowMs = scanConfig.refineWindowMs,
+                        durationMs = durationMs
+                    )
+                    if (refined != null) {
+                        transitionMs = refined
+                        transitionLabel = "Number $beforeNumber -> $afterNumber"
+                        transitionTargetNumber = afterNumber
+                    }
+                }
+
+                if (transitionMs == null && beforeNumber == null && afterNumber != null) {
+                    val firstAppearMs = locateFirstNumberAppearance(
+                        retriever = retriever,
+                        startMs = sampleStart,
+                        hitMs = sampleEnd,
+                        scanWindow = scanWindow,
+                        sourceRotationDegrees = sourceRotationDegrees,
+                        targetNumber = afterNumber,
+                        stepMs = min(1_000L, scanConfig.sampleStepMs),
+                        timing = timing
+                    )
+                    if (firstAppearMs != null) {
+                        transitionMs = firstAppearMs
+                        transitionLabel = "Start $afterNumber"
+                        transitionTargetNumber = afterNumber
+                    }
+                }
+
+                if (transitionMs == null) continue
+                val transitionAtMs = transitionMs
+                val shouldAdd = uniqueTransitions.lastOrNull()?.let { transitionAtMs - it > scanConfig.dedupeMs } ?: true
+                if (shouldAdd) {
+                    uniqueTransitions.add(transitionAtMs)
+                } else {
+                    uniqueTransitions[uniqueTransitions.lastIndex] = min(uniqueTransitions.last(), transitionAtMs)
+                }
+
+                val cutStartMs = max(0L, transitionAtMs - 10_000L)
+                val cutEndMs = min(durationMs, transitionAtMs + 30_000L)
+                val progressPercent = min(100, ((transitionAtMs.toFloat() / durationMs.toFloat()) * 100f + 1).toInt())
+                progress(
+                    "$transitionLabel (candidate ${index + 1}/${candidateWindows.size}) at ${formatMs(transitionAtMs)}; cut ${formatMs(cutStartMs)} -> ${formatMs(cutEndMs)}",
+                    progressPercent
+                )
+                Log.d(
+                    tag,
+                    "candidate=$index score=${candidate.peakScore} before=$beforeNumber after=$transitionTargetNumber @${formatMs(transitionAtMs)}"
+                )
+            }
+
             val artifactPadMs = transitionStyle.edgePaddingMs
-            val rawSegments = transitions.map { t ->
+            val rawSegments = uniqueTransitions.map { t ->
                 SegmentWindow(
                     startMs = max(0L, t - 10_000L - artifactPadMs),
                     endMs = min(durationMs, t + 30_000L + artifactPadMs)
@@ -1799,6 +1848,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                 profileLabel = scanProfileLabel,
                 scanWindow = scanWindow,
                 frameStepMs = frameStepMs,
+                candidatesFound = candidateWindows.size,
                 mode = scanMode.name,
                 durationMs = durationMs,
                 transitionsFound = merged.size,
@@ -1810,6 +1860,67 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             recognizer.close()
             retriever.release()
         }
+    }
+
+    private suspend fun detectNumberInRange(
+        retriever: MediaMetadataRetriever,
+        startMs: Long,
+        endMs: Long,
+        stepMs: Long,
+        scanWindow: ScanWindow,
+        sourceRotationDegrees: Int,
+        timing: ScanTimingSummary
+    ): Int? {
+        if (startMs > endMs) return null
+        val safeStepMs = stepMs.coerceAtLeast(100L)
+        var cursor = startMs
+        while (cursor <= endMs) {
+            val value = detectNumberAt(retriever, cursor, scanWindow, sourceRotationDegrees, timing)
+            if (value != null) return value
+            cursor += safeStepMs
+        }
+        return null
+    }
+
+    private suspend fun refineTransitionBoundary(
+        retriever: MediaMetadataRetriever,
+        startMs: Long,
+        endMs: Long,
+        beforeNumber: Int,
+        afterNumber: Int,
+        scanWindow: ScanWindow,
+        sourceRotationDegrees: Int,
+        timing: ScanTimingSummary,
+        sampleStepMs: Long,
+        iterations: Int,
+        windowMs: Long,
+        durationMs: Long
+    ): Long? {
+        if (startMs >= endMs) return null
+        var lowMs = max(0L, startMs - windowMs)
+        var highMs = min(durationMs, endMs + windowMs)
+        val maxSpanMs = highMs - lowMs
+        val fallbackMs = max(sampleStepMs.coerceAtLeast(120L), maxSpanMs.coerceAtLeast(1L) / 48L)
+        repeat(iterations.coerceIn(4, 20)) {
+            if (highMs - lowMs <= fallbackMs) return@repeat
+            val midMs = lowMs + (highMs - lowMs) / 2L
+            val leftNumber = detectNumberAt(retriever, midMs, scanWindow, sourceRotationDegrees, timing)
+            when (leftNumber) {
+                afterNumber -> highMs = midMs
+                beforeNumber -> lowMs = midMs
+                else -> {
+                    val probeOffset = max(120L, fallbackMs / 2)
+                    val nearby = detectNumberAt(retriever, max(startMs, midMs - probeOffset), scanWindow, sourceRotationDegrees, timing)
+                        ?: detectNumberAt(retriever, min(endMs, midMs + probeOffset), scanWindow, sourceRotationDegrees, timing)
+                    if (nearby == afterNumber) {
+                        highMs = midMs
+                    } else {
+                        lowMs = midMs
+                    }
+                }
+            }
+        }
+        return highMs
     }
 
     private suspend fun locateFirstNumberAppearance(
@@ -1866,42 +1977,6 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             val midMs = lowerMs + (upperMs - lowerMs) / 2L
             val detected = detectNumberAt(retriever, midMs, scanWindow, sourceRotationDegrees, timing)
             if (detected == targetNumber) {
-                upperMs = midMs
-            } else {
-                lowerMs = midMs
-            }
-        }
-        return upperMs
-    }
-
-    private suspend fun refineTransitionNearHit(
-        retriever: MediaMetadataRetriever,
-        startMs: Long,
-        hitMs: Long,
-        scanWindow: ScanWindow,
-        sourceRotationDegrees: Int,
-        previousNumber: Int,
-        timing: ScanTimingSummary
-    ): Long {
-        var lowerMs = startMs
-        var upperMs = hitMs
-        var probeMs = max(startMs, hitMs - 5_000L)
-
-        while (probeMs > startMs) {
-            val detected = detectNumberAt(retriever, probeMs, scanWindow, sourceRotationDegrees, timing)
-            if (detected == null || detected == previousNumber) {
-                lowerMs = probeMs
-                break
-            }
-            upperMs = probeMs
-            probeMs = max(startMs, probeMs - 5_000L)
-        }
-
-        repeat(7) {
-            if (upperMs - lowerMs <= 250L) return@repeat
-            val midMs = lowerMs + (upperMs - lowerMs) / 2L
-            val detected = detectNumberAt(retriever, midMs, scanWindow, sourceRotationDegrees, timing)
-            if (detected != null && detected != previousNumber) {
                 upperMs = midMs
             } else {
                 lowerMs = midMs
@@ -2061,21 +2136,21 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             if (decodeHeight > 0) {
                 return retriever.getScaledFrameAtTime(
                     timeUs,
-                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    MediaMetadataRetriever.OPTION_CLOSEST,
                     decodeWidth,
                     decodeHeight
-                ) ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ) ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
             }
         }
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             retriever.getScaledFrameAtTime(
                 timeUs,
-                MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                MediaMetadataRetriever.OPTION_CLOSEST,
                 640,
                 360
-            ) ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            ) ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
         } else {
-            retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
         }
     }
 
@@ -2149,6 +2224,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             put("sourceUri", report.sourceUri)
             put("profileLabel", report.profileLabel)
             put("frameStepMs", report.frameStepMs)
+            put("candidatesFound", report.candidatesFound)
             put("mode", report.mode)
             put("durationMs", report.durationMs)
             put("transitionsFound", report.transitionsFound)
@@ -2416,6 +2492,7 @@ private data class ScanFindReport(
     val profileLabel: String,
     val scanWindow: ScanWindow,
     val frameStepMs: Long,
+    val candidatesFound: Int,
     val mode: String,
     val durationMs: Long,
     val transitionsFound: Int,
@@ -2427,6 +2504,27 @@ private data class NumberDetectionResult(
     val cropMs: Long,
     val preprocessMs: Long,
     val ocrMs: Long
+)
+
+private data class TransitionCandidateWindow(
+    val startMs: Long,
+    val endMs: Long,
+    val seedMs: Long,
+    val peakScore: Float
+)
+
+private data class ChangeMapConfig(
+    val sampleStepMs: Long,
+    val signatureScaleWidthPx: Int,
+    val candidatePadMs: Long,
+    val candidateMergeGapMs: Long,
+    val changeThreshold: Float,
+    val periodicProbeMs: Long,
+    val neighborhoodStepMs: Long,
+    val refineWindowMs: Long,
+    val refineIterations: Int,
+    val dedupeMs: Long,
+    val prefirstProbeMs: Long
 )
 
 private data class RoiSignature(
@@ -2449,7 +2547,7 @@ private data class UpdateInfo(
 private data class SegmentWindow(val startMs: Long, val endMs: Long)
 private data class ScanWindow(val xPercent: Float, val yPercent: Float, val widthPercent: Float, val heightPercent: Float)
 private data class ScanProfile(val label: String, val frameStepMs: Long, val mode: ScanMode)
-private enum class ScanMode { Fast, Checkpoints3Min }
+private enum class ScanMode { FastChangeMap, AccurateChangeMap, DenseRefine }
 private enum class RoiTouchMode { NONE, MOVE, RESIZE }
 
 private enum class TransitionStyle(val label: String, val edgePaddingMs: Long, val mergeGapMs: Long) {

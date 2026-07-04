@@ -1,8 +1,8 @@
 {
-  "version": "0.14.3",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.3",
+  "version": "0.14.4",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.4",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.3/CompilationMaker-v0.14.3.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.4/CompilationMaker-v0.14.4.apk"
   },
-  "notes": "Phase 14.3 adds faster preview-first compilation, lets you play and scrub the generated compilation before saving, and adds instant cut vs gradual transition padding modes to help reduce persistent transition artifacts."
+  "notes": "Phase 14.4 updates transition localization with visual change-map candidate scanning, OCR-confirmed checkpoints, and boundary refinement to find number transitions closer to the actual number-change timestamp."
 }
