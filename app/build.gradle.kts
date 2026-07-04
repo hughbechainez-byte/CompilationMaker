@@ -13,15 +13,18 @@ android {
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
 
     defaultConfig {
-        applicationId = "com.example.compilationmaker"
+        applicationId = "com.hughbechainez.compilationmaker"
         minSdk = 24
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.13.3"
+        versionCode = 17
+        versionName = "0.14.0"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -55,6 +58,12 @@ android {
     buildFeatures {
         viewBinding = true
         buildConfig = true
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 
