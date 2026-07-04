@@ -25,16 +25,16 @@ jobs:
       - name: Grant execute for Gradle wrapper
         run: chmod +x ./gradlew
 
-      - name: Build debug APK
+      - name: Build release APK
         run: |
-          ./gradlew :app:assembleDebug
           ./gradlew :app:assembleRelease
+          ./gradlew :app:assembleDebug
 
       - name: Locate APK artifact
         id: artifact
         run: |
           TAG_NAME="${GITHUB_REF_NAME}"
-          APK_PATH="$(find app/build/outputs -type f -name '*.apk' | head -n 1)"
+          APK_PATH="$(find app/build/outputs/apk/release app/build/outputs/apk/debug -type f -name '*.apk' | head -n 1)"
           if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
             echo "APK not found in app/build/outputs"
             echo "Contents of app/build/outputs/apk:" 
@@ -46,22 +46,13 @@ jobs:
           cp "$APK_PATH" "dist/CompilationMaker-${TAG_NAME}.apk"
           echo "apk_path=dist/CompilationMaker-${TAG_NAME}.apk" >> "$GITHUB_OUTPUT"
 
-      - name: Fallback upload (ensures APK is attached)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Creating release $TAG"
-            gh release create "$TAG" \
-              --title "CompilationMaker $TAG" \
-              --generate-notes \
-              --latest
-          else
-            echo "Updating existing release $TAG"
-          fi
-          gh release upload "$TAG" "${{ steps.artifact.outputs.apk_path }}#CompilationMaker-${TAG}.apk" --clobber
-          if [ $? -ne 0 ]; then
-            echo "Failed to upload APK to release assets."
-            exit 1
-          fi
+      - name: Publish GitHub Release with APK asset
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: "CompilationMaker ${{ github.ref_name }}"
+          artifacts: ${{ steps.artifact.outputs.apk_path }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          makeLatest: true
+          generateReleaseNotes: true
