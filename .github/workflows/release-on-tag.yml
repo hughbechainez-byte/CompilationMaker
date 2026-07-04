@@ -46,23 +46,22 @@ jobs:
           cp "$APK_PATH" "dist/CompilationMaker-${TAG_NAME}.apk"
           echo "apk_path=dist/CompilationMaker-${TAG_NAME}.apk" >> "$GITHUB_OUTPUT"
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: "CompilationMaker ${{ github.ref_name }}"
-          files: ${{ steps.artifact.outputs.apk_path }}
-          generate_release_notes: true
-          make_latest: "true"
-          fail_on_unmatched_files: true
-
       - name: Fallback upload (ensures APK is attached)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" "${{ steps.artifact.outputs.apk_path }}" --clobber
+          TAG="${GITHUB_REF_NAME}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Creating release $TAG"
+            gh release create "$TAG" \
+              --title "CompilationMaker $TAG" \
+              --generate-notes \
+              --latest
           else
-            echo "Release not yet published, cannot attach APK."
+            echo "Updating existing release $TAG"
+          fi
+          gh release upload "$TAG" "${{ steps.artifact.outputs.apk_path }}#CompilationMaker-${TAG}.apk" --clobber
+          if [ $? -ne 0 ]; then
+            echo "Failed to upload APK to release assets."
             exit 1
           fi
