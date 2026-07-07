@@ -23,8 +23,8 @@ android {
         applicationId = "com.hughbechainez.compilationmaker"
         minSdk = 24
         targetSdk = 35
-        versionCode = 24
-        versionName = "0.15.0"
+        versionCode = 25
+        versionName = "0.15.1"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -77,4 +77,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }

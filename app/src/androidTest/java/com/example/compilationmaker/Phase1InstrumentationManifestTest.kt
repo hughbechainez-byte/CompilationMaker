@@ -1,8 +1,8 @@
 package com.example.compilationmaker
 
 import org.junit.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 
 class Phase1InstrumentationManifestTest {
     private val clipManifest = listOf(

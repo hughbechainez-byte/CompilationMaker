@@ -92,6 +92,8 @@ class MainActivity : AppCompatActivity() {
     private var lastProgressPercent = -1
     private var lastProgressUpdateMs = 0L
     private var notificationChannelReady = false
+    private var lastNotificationUpdateMs = 0L
+    private var lastNotificationProgressPercent = -1
     private var previewBitmap: Bitmap? = null
     private var pendingCompilationFile: File? = null
     private var pendingCompilationFormat: ExportFormat? = null
@@ -626,7 +628,12 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 if (e !is CancellationException) {
                     Log.e(logTag, "Compilation failed", e)
-                    emitProgress("Error: ${e.message ?: "failed"}", 100)
+                    val userMessage = if (e.message?.contains("InputImage width and height", ignoreCase = true) == true) {
+                        SafeVisionImage.userFacingNoValidFramesMessage()
+                    } else {
+                        "${e::class.java.simpleName}: ${e.message ?: "failed"}"
+                    }
+                    emitProgress("Error: $userMessage", 100)
                 }
             } finally {
                 isBusy = false
@@ -664,15 +671,22 @@ class MainActivity : AppCompatActivity() {
                 val targetHeight = max(360, frameImage.height).coerceAtMost(720)
                 try {
                     retriever.setDataSource(this@MainActivity, source)
-                    retriever.getScaledFrameAtTime(
-                        safePosition * 1000L,
-                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                        targetWidth,
-                        targetHeight
-                    ) ?: retriever.getFrameAtTime(
-                        safePosition * 1000L,
-                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                    )
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                        retriever.getScaledFrameAtTime(
+                            safePosition * 1000L,
+                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            targetWidth,
+                            targetHeight
+                        ) ?: retriever.getFrameAtTime(
+                            safePosition * 1000L,
+                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                        )
+                    } else {
+                        retriever.getFrameAtTime(
+                            safePosition * 1000L,
+                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                        )
+                    }
                 } finally {
                     retriever.release()
                 }
@@ -997,6 +1011,12 @@ class MainActivity : AppCompatActivity() {
         ) {
             return
         }
+
+        val now = SystemClock.elapsedRealtime()
+        val shouldNotify = !ongoing || percent != lastNotificationProgressPercent || now - lastNotificationUpdateMs >= 750L
+        if (!shouldNotify) return
+        lastNotificationProgressPercent = percent
+        lastNotificationUpdateMs = now
 
         ensureProgressNotificationChannel()
         val launchIntent = Intent(this, MainActivity::class.java).apply {
@@ -1607,12 +1627,17 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         val retriever = android.media.MediaMetadataRetriever().apply {
             setDataSource(context, sourceUri)
         }
+        val sourceWidth = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+        val sourceHeight = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
         val frameProvider = RetrieverFrameProvider(
             retriever = retriever,
             sourceRotationDegrees = sourceRotationDegrees,
-            sourceWidth = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0,
-            sourceHeight = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+            sourceWidth = sourceWidth,
+            sourceHeight = sourceHeight
         )
+        if (BuildConfig.DEBUG) {
+            Log.d(tag, "Scan source video=${sourceWidth}x${sourceHeight} rotation=${sourceRotationDegrees} roi=${scanWindow.xPercent},${scanWindow.yPercent},${scanWindow.widthPercent},${scanWindow.heightPercent} quality=$scanProfileLabel mode=$scanMode")
+        }
         val timing = ScanTimingSummary()
         val scanConfig = when (scanMode) {
             ScanMode.FastChangeMap -> ChangeMapConfig(
@@ -2007,7 +2032,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                 transitionsFound = merged.size,
                 timing = timing,
                 metrics = ScanMetrics(
-                    scannerVersion = "v0.15-adaptive-roi-windowed",
+                    scannerVersion = "v0.15.1-safe-roi-windowed",
                     wallClockMs = wallClockMs,
                     baselineSamplesEstimate = baselineSamplesEstimate,
                     visualSamples = visualSamples,
@@ -2286,11 +2311,14 @@ private class VideoCompilationEngine(private val context: MainActivity) {
 
         val scaled = scaleBitmapForOcr(corner)
         return try {
-            val image = InputImage.fromBitmap(scaled, 0)
+            val image = createSafeInputImage(scaled, "OCR")
             val result = recognizer.process(image).await()
             val text = result.text.replace("\n", " ")
             val match = Regex("[-+]?[0-9]+").find(text)
             match?.value?.toIntOrNull()
+        } catch (e: Exception) {
+            Log.w(tag, "Skipping OCR frame after vision input failure: ${e::class.java.simpleName}: ${e.message}", e)
+            null
         } finally {
             if (scaled != corner) {
                 scaled.recycle()
@@ -2323,13 +2351,16 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         val preprocessMs = System.currentTimeMillis() - preprocessStartMs
 
         return try {
-            val image = InputImage.fromBitmap(scaled, 0)
+            val image = createSafeInputImage(scaled, "OCR")
             val ocrStart = System.currentTimeMillis()
             val result = recognizer.process(image).await()
             val ocrMs = System.currentTimeMillis() - ocrStart
             val text = result.text.replace("\n", " ")
             val match = Regex("[-+]?[0-9]+").find(text)
             NumberDetectionResult(match?.value?.toIntOrNull(), cropMs, preprocessMs, ocrMs)
+        } catch (e: Exception) {
+            Log.w(tag, "Skipping OCR frame after vision input failure: ${e::class.java.simpleName}: ${e.message}", e)
+            NumberDetectionResult(null, cropMs, preprocessMs, 0L)
         } finally {
             if (scaled != corner) {
                 scaled.recycle()
@@ -2339,6 +2370,13 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                 normalizedFrame.recycle()
             }
         }
+    }
+
+    private fun createSafeInputImage(bitmap: Bitmap, label: String): InputImage {
+        require(bitmap.width >= MIN_INPUT_IMAGE_DIMENSION && bitmap.height >= MIN_INPUT_IMAGE_DIMENSION) {
+            "$label bitmap ${bitmap.width}x${bitmap.height} is smaller than ML Kit minimum ${MIN_INPUT_IMAGE_DIMENSION}x${MIN_INPUT_IMAGE_DIMENSION}"
+        }
+        return InputImage.fromBitmap(bitmap, 0)
     }
 
     private fun normalizeBitmapForOcr(source: Bitmap, rotationDegrees: Int): Bitmap {
@@ -2558,20 +2596,38 @@ private class VideoCompilationEngine(private val context: MainActivity) {
     }
 
     private fun cropToWindow(frame: Bitmap, scanWindow: ScanWindow): Bitmap {
-        val x = (frame.width * scanWindow.xPercent).roundToInt().coerceIn(0, frame.width - 1)
-        val y = (frame.height * scanWindow.yPercent).roundToInt().coerceIn(0, frame.height - 1)
-        val width = (frame.width * scanWindow.widthPercent).roundToInt().coerceIn(1, frame.width - x)
-        val height = (frame.height * scanWindow.heightPercent).roundToInt().coerceIn(1, frame.height - y)
-        return Bitmap.createBitmap(frame, x, y, width, height)
+        val rect = SafeVisionImage.computeSafeCropRect(frame.width, frame.height, scanWindow)
+            ?: throw IllegalArgumentException("Invalid analysis frame ${frame.width}x${frame.height}; ML Kit input requires at least ${MIN_INPUT_IMAGE_DIMENSION}x${MIN_INPUT_IMAGE_DIMENSION}")
+        if (BuildConfig.DEBUG) {
+            Log.d(
+                tag,
+                "ROI crop source=${frame.width}x${frame.height} roi=${scanWindow.xPercent},${scanWindow.yPercent},${scanWindow.widthPercent},${scanWindow.heightPercent} " +
+                    "crop=${rect.left},${rect.top},${rect.width}x${rect.height} fallback=${rect.usedFullFrameFallback}"
+            )
+        }
+        return Bitmap.createBitmap(frame, rect.left, rect.top, rect.width, rect.height)
     }
 
     private fun scaleBitmapForOcr(input: Bitmap): Bitmap {
         val maxSide = 320
-        if (input.width <= maxSide && input.height <= maxSide) return input
-        val scale = min(maxSide.toFloat() / input.width, maxSide.toFloat() / input.height)
-        val targetW = max(1, (input.width * scale).roundToInt())
-        val targetH = max(1, (input.height * scale).roundToInt())
+        if (input.width >= MIN_INPUT_IMAGE_DIMENSION && input.height >= MIN_INPUT_IMAGE_DIMENSION && input.width <= maxSide && input.height <= maxSide) return input
+        val upscale = max(
+            MIN_INPUT_IMAGE_DIMENSION.toFloat() / input.width.coerceAtLeast(1),
+            MIN_INPUT_IMAGE_DIMENSION.toFloat() / input.height.coerceAtLeast(1)
+        )
+        val downscale = min(maxSide.toFloat() / input.width.coerceAtLeast(1), maxSide.toFloat() / input.height.coerceAtLeast(1))
+        val scale = if (input.width < MIN_INPUT_IMAGE_DIMENSION || input.height < MIN_INPUT_IMAGE_DIMENSION) upscale else downscale
+        val targetW = max(MIN_INPUT_IMAGE_DIMENSION, (input.width * scale).roundToInt())
+        val targetH = max(MIN_INPUT_IMAGE_DIMENSION, (input.height * scale).roundToInt())
         return Bitmap.createScaledBitmap(input, targetW, targetH, true)
+    }
+
+    private fun extractorSampleFlagsToBufferFlags(sampleFlags: Int): Int {
+        return if (sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) {
+            MediaCodec.BUFFER_FLAG_KEY_FRAME
+        } else {
+            0
+        }
     }
 
     private fun materializeCompilation(
@@ -2630,7 +2686,6 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             var segmentMaxUs = outputCursorUs
 
             for (trackIndex in trackMap.keys) {
-                var lastInputSampleUs = Long.MIN_VALUE
                 var lastOutputSampleUs = outputCursorUs
                 extractor.selectTrack(trackIndex)
                 extractor.seekTo(segStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
@@ -2660,10 +2715,9 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                         lastOutputSampleUs + 1L
                     }
                     sampleInfo.presentationTimeUs = outputPtsUs
-                    sampleInfo.flags = extractor.sampleFlags
+                    sampleInfo.flags = extractorSampleFlagsToBufferFlags(extractor.sampleFlags)
                     sampleInfo.offset = 0
                     muxer.writeSampleData(trackMap.getValue(trackIndex), segmentBuffer, sampleInfo)
-                    lastInputSampleUs = sampleTimeUs
                     lastOutputSampleUs = outputPtsUs
                     if (isProgressTrack) {
                         segTrackMaxUs = maxOf(segTrackMaxUs, outputPtsUs)
@@ -2878,7 +2932,7 @@ private data class ScanMetrics(
 ) {
     companion object {
         fun empty(): ScanMetrics = ScanMetrics(
-            scannerVersion = "v0.15-adaptive-roi-windowed",
+            scannerVersion = "v0.15.1-safe-roi-windowed",
             wallClockMs = 0L,
             baselineSamplesEstimate = 0,
             visualSamples = 0,
@@ -2933,7 +2987,7 @@ private data class UpdateInfo(
 )
 
 private data class SegmentWindow(val startMs: Long, val endMs: Long)
-private data class ScanWindow(val xPercent: Float, val yPercent: Float, val widthPercent: Float, val heightPercent: Float)
+data class ScanWindow(val xPercent: Float, val yPercent: Float, val widthPercent: Float, val heightPercent: Float)
 private data class ScanProfile(val label: String, val frameStepMs: Long, val mode: ScanMode)
 private enum class ScanMode { FastChangeMap, AccurateChangeMap, DenseRefine }
 private enum class RoiTouchMode { NONE, MOVE, RESIZE }
