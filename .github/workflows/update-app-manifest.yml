@@ -41,17 +41,17 @@ jobs:
           NOTE: ${{ github.event.release.body }}
         run: |
           node - <<'NODE'
-const fs = require("fs");
+          const fs = require("fs");
 
-const manifest = {
-  version: process.env.TAG || "0.0.0",
-  releaseUrl: process.env.RELEASE_URL || "",
-  apk: { url: process.env.APK_URL || "" },
-  notes: process.env.NOTE || "Release published."
-};
+          const manifest = {
+            version: process.env.TAG || "0.0.0",
+            releaseUrl: process.env.RELEASE_URL || "",
+            apk: { url: process.env.APK_URL || "" },
+            notes: process.env.NOTE || "Release published."
+          };
 
-fs.writeFileSync("app-update.json", JSON.stringify(manifest, null, 2) + "\n");
-NODE
+          fs.writeFileSync("app-update.json", JSON.stringify(manifest, null, 2) + "\n");
+          NODE
 
       - name: Commit and push manifest update
         env:
