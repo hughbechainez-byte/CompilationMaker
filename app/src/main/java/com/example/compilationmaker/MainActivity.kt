@@ -38,6 +38,7 @@ import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.CheckBox
 import android.widget.ProgressBar
 import android.widget.MediaController
 import android.widget.SeekBar
@@ -57,6 +58,14 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.Observer
+import androidx.work.ExistingWorkPolicy
+import androidx.work.Data
+import androidx.work.OneTimeWorkRequest
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.example.compilationmaker.databinding.ActivityMainBinding
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -71,6 +80,7 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.util.ArrayDeque
 import java.util.Locale
+import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.max
@@ -200,24 +210,30 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusFeedScroll: ScrollView
     private lateinit var checkUpdatesButton: Button
     private lateinit var transitionStyleSpinner: Spinner
+    private lateinit var experimentalModeSwitch: CheckBox
+    private lateinit var experimentalDownscaleSpinner: Spinner
+    private lateinit var experimentalModeWarningText: TextView
 
     private val qualityOptions = arrayOf(ExportQuality.Low, ExportQuality.Medium, ExportQuality.High)
     private val formatOptions = arrayOf(ExportFormat.Mp4, ExportFormat.Webm, ExportFormat.Mov)
     private val transitionStyleOptions = arrayOf(TransitionStyle.Instant, TransitionStyle.Gradual)
-    private val scanProfiles = arrayOf(
-        ScanProfile("Fast change map (0.5s)", 500L, ScanMode.FastChangeMap),
-        ScanProfile("Fast change map (0.75s)", 750L, ScanMode.FastChangeMap),
-        ScanProfile("Balanced change map (1s)", 1_000L, ScanMode.FastChangeMap),
-        ScanProfile("Accurate change map (500ms)", 500L, ScanMode.AccurateChangeMap),
-        ScanProfile("Accurate (250ms)", 250L, ScanMode.AccurateChangeMap),
-        ScanProfile("Dense local refine (250ms)", 250L, ScanMode.DenseRefine),
-        ScanProfile("Dense local refine (150ms)", 150L, ScanMode.DenseRefine)
+    private val checkpointProfiles = arrayOf(
+        ScanProfile("1 minute checkpoint", 60_000L, ScanMode.StableCheckpoint),
+        ScanProfile("3 minute checkpoint", 180_000L, ScanMode.StableCheckpoint),
+        ScanProfile("5 minute checkpoint", 300_000L, ScanMode.StableCheckpoint)
     )
+    private val experimentalDownscaleOptions = intArrayOf(16, 24, 32, 40)
     private val defaultScanWindow = ScanWindow(0.0f, 0.8f, 0.10f, 0.30f)
+    private val compilationWorkName = "compilation_scan_export"
     private val progressNotificationChannelId = "compilation_progress"
     private val progressNotificationId = 6106
     private val updateNotificationChannelId = "compilation_updates"
     private val updateNotificationId = 6110
+    private val workManager by lazy { WorkManager.getInstance(this) }
+    private var compilationWorkId: UUID? = null
+    private var activeWorkInfoLiveData: LiveData<WorkInfo>? = null
+    private var activeWorkObserver: Observer<WorkInfo>? = null
+    private val compileWorkPrefs by lazy { getSharedPreferences("compilation_jobs", MODE_PRIVATE) }
     private val updateManifestRawEndpoint =
         "https://raw.githubusercontent.com/hughbechainez-byte/CompilationMaker/master/app-update.json"
     private val updateManifestBlobEndpoint =
@@ -247,6 +263,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        dismissCompilationWorkObserver()
         stopPreviewProgressUpdates()
         stopCompilationPreviewProgressUpdates()
         pendingCompilationFile?.delete()
@@ -280,6 +297,9 @@ class MainActivity : AppCompatActivity() {
         statusFeedText = binding.statusFeedText
         statusFeedScroll = binding.statusFeedScroll
         checkUpdatesButton = binding.checkUpdatesButton
+        experimentalModeSwitch = binding.experimentalModeSwitch
+        experimentalDownscaleSpinner = binding.experimentalDownscalePicker
+        experimentalModeWarningText = binding.experimentalModeWarning
         roiOverlay.isClickable = false
         roiOverlay.isFocusable = false
         val mediaController = MediaController(this)
@@ -498,10 +518,15 @@ class MainActivity : AppCompatActivity() {
             val quality = qualityOptions[qualitySpinner.selectedItemPosition]
             val format = formatOptions[formatSpinner.selectedItemPosition]
             val transitionStyle = transitionStyleOptions[transitionStyleSpinner.selectedItemPosition.coerceIn(0, transitionStyleOptions.lastIndex)]
-            runCompilation(source, quality, format, transitionStyle)
+            startCompilationJob(source, quality, format, transitionStyle)
         }
         checkUpdatesButton.setOnClickListener {
             checkForUpdates(force = true)
+        }
+
+        experimentalModeSwitch.setOnCheckedChangeListener { _, checked ->
+            experimentalDownscaleSpinner.isEnabled = checked
+            experimentalModeWarningText.visibility = if (checked) View.VISIBLE else View.GONE
         }
 
         qualitySpinner.adapter = ArrayAdapter(
@@ -518,9 +543,17 @@ class MainActivity : AppCompatActivity() {
         scanSpeedSpinner.adapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_item,
-            scanProfiles.map { it.label },
+            checkpointProfiles.map { it.label },
         )
         scanSpeedSpinner.setSelection(1, false)
+        experimentalDownscaleSpinner.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            experimentalDownscaleOptions.map { "${it}x${it}" },
+        )
+        experimentalDownscaleSpinner.setSelection(2, false)
+        experimentalModeSwitch.isChecked = false
+        experimentalDownscaleSpinner.isEnabled = false
         transitionStyleSpinner.adapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_item,
@@ -537,6 +570,7 @@ class MainActivity : AppCompatActivity() {
         binding.progressBar.max = 100
         progressPercentText.text = "0%"
         clearStatusFeed("Ready")
+        restoreActiveCompilationWork()
     }
 
     private fun requestPermissionsIfNeeded() {
@@ -552,94 +586,202 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun runCompilation(uri: Uri, quality: ExportQuality, format: ExportFormat, transitionStyle: TransitionStyle) {
+    private fun startCompilationJob(
+        uri: Uri,
+        quality: ExportQuality,
+        format: ExportFormat,
+        transitionStyle: TransitionStyle
+    ) {
         lifecycleScope.launch {
-            isBusy = true
-            setUiBusy(true)
-            clearPendingCompilationPreview(deleteFile = true)
-            clearStatusFeed("Starting")
-            emitProgress("Analyzing number changes...", 0)
+            startCompilationJobOnBackgroundThread(uri, quality, format, transitionStyle)
+        }
+    }
 
-            try {
-                val engine = VideoCompilationEngine(this@MainActivity)
-                val scanWindow = readScanWindow()
-                val scanProfile = selectedScanProfile()
-                val timingBuckets = linkedMapOf<String, Long>()
-                emitProgress(
-                    "Scan mode: ${scanProfile.label} (step ${scanProfile.frameStepMs}ms), focus area X:${String.format(Locale.US, "%.1f", scanWindow.xPercent * 100f)}% Y:${String.format(Locale.US, "%.1f", scanWindow.yPercent * 100f)}%",
-                    0
-                )
-                val scanResult = engine.findNumberTransitionSegments(
-                    uri,
-                    scanProfile.frameStepMs,
-                    scanProfile.mode,
-                    scanWindow,
-                    selectedVideoRotationDegrees,
-                    scanProfile.label,
-                    transitionStyle
-                ) { message, percent ->
-                    emitProgress(message, (percent * 50 / 100).coerceIn(0, 50))
+    private suspend fun startCompilationJobOnBackgroundThread(
+        uri: Uri,
+        quality: ExportQuality,
+        format: ExportFormat,
+        transitionStyle: TransitionStyle
+    ) {
+        if (isBusy) {
+            withContext(Dispatchers.Main) {
+                emitProgress("Compilation already running. Wait for it to finish or restart the app.", 100)
+            }
+            return
+        }
+        val existingWorkId = compileWorkPrefs.getString("active_work_id", null)?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        if (existingWorkId != null) {
+            val existing = withContext(Dispatchers.IO) { workManager.getWorkInfoById(existingWorkId).get() }
+            if (existing != null && (existing.state == WorkInfo.State.RUNNING || existing.state == WorkInfo.State.ENQUEUED)) {
+                withContext(Dispatchers.Main) {
+                    emitProgress("Compilation already running in background. Use status for progress.", 100)
+                    observeCompilationWork(existingWorkId)
                 }
-                timingBuckets["scan"] = scanResult.timing.totalMs()
-                emitProgress(
-                    "Scan timing (ms): decode=${scanResult.timing.decodeMs} crop=${scanResult.timing.cropMs} preprocess=${scanResult.timing.preprocessMs} ocr=${scanResult.timing.ocrMs} merge=${scanResult.timing.mergeMs}",
-                    51
-                )
-                emitProgress(
-                    "Scan metrics: ${String.format(Locale.US, "%.2f", scanResult.metrics.throughputVideoToWall)}x realtime, OCR ${scanResult.metrics.ocrCalls}/${scanResult.metrics.baselineSamplesEstimate} (-${scanResult.metrics.ocrReductionPercent}%), transitions=${scanResult.transitionMarks.size}",
-                    52
-                )
-
-                val windows = scanResult.segments.toMutableList()
-                if (windows.isEmpty()) {
-                    emitProgress("No number transitions found. Falling back to a short full-video clip.", 52)
-                    val durationMs = engine.getDurationMs(uri)
-                    if (durationMs <= 0L) {
-                        emitProgress("Unable to read source duration.", 100)
-                        return@launch
-                    }
-                    windows.clear()
-                    windows.add(SegmentWindow(0L, min(durationMs, 30_000L)))
-                }
-                val clipWindowMs = windows.sumOf { it.endMs - it.startMs }.coerceAtLeast(1L)
-                emitProgress(
-                    "Scan complete: ${windows.size} segments, combined duration ${formatDurationMs(clipWindowMs)}",
-                    54
-                )
-
-                emitProgress("Preparing ${windows.size} trim/copy segments (${formatDurationMs(clipWindowMs)} source span)...", 55)
-                var compiledOutput: File? = null
-                val exportTiming = measureTimeMillis {
-                    compiledOutput = engine.renderCompilation(uri, windows, quality, format, transitionStyle) { message, percent ->
-                        emitProgress(message, percent)
-                    }
-                }
-                timingBuckets["export"] = exportTiming
-
-                val output = compiledOutput ?: throw IllegalStateException("Compilation output missing")
-                showPendingCompilationPreview(output, format)
-                emitProgress("Export timing (ms): preview=$exportTiming. Review preview, then save or discard.", 100)
-                emitProgress(
-                    "Performance summary: scan=${timingBuckets["scan"]}ms preview=${timingBuckets["export"]}ms",
-                    100
-                )
-                emitProgress("Scan report stored: ${engine.latestScanReportPath}", 100)
-                Toast.makeText(this@MainActivity, "Preview ready", Toast.LENGTH_LONG).show()
-            } catch (e: Exception) {
-                if (e !is CancellationException) {
-                    Log.e(logTag, "Compilation failed", e)
-                    val userMessage = if (e.message?.contains("InputImage width and height", ignoreCase = true) == true) {
-                        SafeVisionImage.userFacingNoValidFramesMessage()
-                    } else {
-                        "${e::class.java.simpleName}: ${e.message ?: "failed"}"
-                    }
-                    emitProgress("Error: $userMessage", 100)
-                }
-            } finally {
-                isBusy = false
-                setUiBusy(false)
+                return
+            }
+            if (existing == null || existing.state == WorkInfo.State.SUCCEEDED || existing.state == WorkInfo.State.CANCELLED || existing.state == WorkInfo.State.FAILED) {
+                compileWorkPrefs.edit().remove("active_work_id").apply()
             }
         }
+
+        val scanProfile = selectedCheckpointProfile()
+        val experimentalMode = experimentalModeSwitch.isChecked
+        if (experimentalMode && !readScanWindow().let { it.widthPercent > 0.001f && it.heightPercent > 0.001f }) {
+            withContext(Dispatchers.Main) {
+                emitProgress("Invalid ROI. Capture a frame and choose a valid ROI before running experimental scan.", 100)
+            }
+            return
+        }
+
+        withContext(Dispatchers.Main) {
+            clearPendingCompilationPreview(deleteFile = true)
+            setUiBusy(true)
+            isBusy = true
+            clearStatusFeed("Queued")
+            emitProgress(
+                "Starting ${if (experimentalMode) "Experimental Fast ROI Scan" else "Stable Checkpoint Scan"} " +
+                    "(${scanProfile.label}) and preparing output...",
+                0
+            )
+        }
+
+        val inputData = Data.Builder()
+            .putString(CompilationWorker.KEY_SOURCE_URI, uri.toString())
+            .putString(CompilationWorker.KEY_SCAN_WINDOW, JSONObject().apply {
+                put("xPercent", selectedScanWindow.xPercent)
+                put("yPercent", selectedScanWindow.yPercent)
+                put("widthPercent", selectedScanWindow.widthPercent)
+                put("heightPercent", selectedScanWindow.heightPercent)
+            }.toString())
+            .putInt(CompilationWorker.KEY_SCAN_MODE, if (experimentalMode) ScanMode.Experimental.ordinal else ScanMode.StableCheckpoint.ordinal)
+            .putLong(CompilationWorker.KEY_CHECKPOINT_INTERVAL_MS, scanProfile.frameStepMs)
+            .putInt(CompilationWorker.KEY_EXPERIMENTAL_DOWNSCALE, selectedExperimentalDownscaleSize())
+            .putInt(CompilationWorker.KEY_QUALITY_ORDINAL, quality.ordinal)
+            .putInt(CompilationWorker.KEY_FORMAT_ORDINAL, format.ordinal)
+            .putInt(CompilationWorker.KEY_TRANSITION_STYLE_ORDINAL, transitionStyle.ordinal)
+            .putInt(CompilationWorker.KEY_VIDEO_ROTATION, selectedVideoRotationDegrees)
+            .build()
+
+        val request = OneTimeWorkRequestBuilder<CompilationWorker>()
+            .setInputData(inputData)
+            .build()
+
+        compilationWorkId = request.id
+        compileWorkPrefs.edit().putString("active_work_id", request.id.toString()).apply()
+        observeCompilationWork(request.id)
+        workManager.enqueueUniqueWork(compilationWorkName, ExistingWorkPolicy.KEEP, request)
+    }
+
+    private val selectedScanWindow: ScanWindow
+        get() = readScanWindow()
+
+    private fun selectedCheckpointProfile(): ScanProfile {
+        val index = scanSpeedSpinner.selectedItemPosition.coerceIn(0, checkpointProfiles.lastIndex)
+        return checkpointProfiles[index]
+    }
+
+    private fun selectedExperimentalDownscaleSize(): Int {
+        val index = experimentalDownscaleSpinner.selectedItemPosition.coerceIn(0, experimentalDownscaleOptions.lastIndex)
+        return experimentalDownscaleOptions[index]
+    }
+
+    private fun observeCompilationWork(workId: UUID) {
+        dismissCompilationWorkObserver()
+        activeWorkObserver = Observer { workInfo ->
+            if (workInfo == null) return@Observer
+            when (workInfo.state) {
+                WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING -> {
+                    val data = workInfo.progress
+                    val phase = data.getString(CompilationWorker.KEY_PROGRESS_PHASE) ?: "processing"
+                    val percent = data.getInt(CompilationWorker.KEY_PROGRESS_PERCENT, 0)
+                    val message = data.getString(CompilationWorker.KEY_PROGRESS_MESSAGE) ?: "Compilation ${phase}"
+                    emitProgress("$phase: $message", percent)
+                    isBusy = true
+                    setUiBusy(true)
+                }
+                WorkInfo.State.SUCCEEDED -> {
+                    val outputPath = workInfo.outputData.getString(CompilationWorker.KEY_OUTPUT_PATH).orEmpty()
+                    val outputFormat = exportFormatFromOrdinal(
+                        workInfo.outputData.getInt(CompilationWorker.KEY_FORMAT_ORDINAL, ExportFormat.Mp4.ordinal)
+                    )
+                    val scanReportPath = workInfo.outputData.getString(CompilationWorker.KEY_REPORT_PATH)
+                    val fallbackUsed = workInfo.outputData.getBoolean(CompilationWorker.KEY_FALLBACK_USED, false)
+                    emitProgress("Compilation finished. report=$scanReportPath", 100)
+                    if (fallbackUsed) {
+                        emitProgress("Experimental scan failed; stable checkpoint scan was used.", 100)
+                    }
+                    if (outputPath.isNotBlank()) {
+                        val output = File(outputPath)
+                        if (output.exists()) {
+                            showPendingCompilationPreview(output, outputFormat)
+                            emitProgress("Preview ready for save/discard.", 100)
+                        } else {
+                            emitProgress("Compilation output path invalid: $outputPath", 100)
+                        }
+                    } else {
+                        emitProgress("Compilation finished without output path.", 100)
+                    }
+                    finalizeCompilationWork(workId = workId, clearBusy = true)
+                }
+                WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
+                    val failureReason = workInfo.outputData.getString(CompilationWorker.KEY_ERROR_MESSAGE)
+                        ?: "Compilation ${workInfo.state.name.lowercase()}"
+                    emitProgress("Compilation failed: $failureReason", 100)
+                    finalizeCompilationWork(workId = workId, clearBusy = true)
+                }
+                else -> {
+                    finalizeCompilationWork(workId = workId, clearBusy = true)
+                }
+            }
+        }
+        activeWorkInfoLiveData = workManager.getWorkInfoByIdLiveData(workId)
+        activeWorkInfoLiveData?.observe(this, activeWorkObserver!!)
+    }
+
+    private fun finalizeCompilationWork(workId: UUID, clearBusy: Boolean) {
+        dismissCompilationWorkObserver()
+        if (clearBusy) {
+            isBusy = false
+            setUiBusy(false)
+            clearProgressNotification()
+        }
+        if (compilationWorkId == workId) {
+            compilationWorkId = null
+            compileWorkPrefs.edit().remove("active_work_id").apply()
+        }
+    }
+
+    private fun dismissCompilationWorkObserver() {
+        activeWorkObserver?.let { observer ->
+            activeWorkInfoLiveData?.removeObserver(observer)
+        }
+        activeWorkInfoLiveData = null
+        activeWorkObserver = null
+    }
+
+    private fun restoreActiveCompilationWork() {
+        val existingId = compileWorkPrefs.getString("active_work_id", null) ?: return
+        val parsed = runCatching { UUID.fromString(existingId) }.getOrNull() ?: return
+        lifecycleScope.launch {
+            val status = withContext(Dispatchers.IO) {
+                workManager.getWorkInfoById(parsed).get()
+            }
+            if (status == null || status.state == WorkInfo.State.SUCCEEDED || status.state == WorkInfo.State.FAILED || status.state == WorkInfo.State.CANCELLED) {
+                compileWorkPrefs.edit().remove("active_work_id").apply()
+                return@launch
+            }
+            runOnUiThread {
+                emitProgress("Resuming tracked background compilation", 0)
+            }
+            observeCompilationWork(parsed)
+            emitProgress("Resuming background compilation", 1)
+        }
+    }
+
+    private fun exportFormatFromOrdinal(ordinal: Int): ExportFormat = when (ordinal) {
+        ExportFormat.Webm.ordinal -> ExportFormat.Webm
+        ExportFormat.Mov.ordinal -> ExportFormat.Mov
+        else -> ExportFormat.Mp4
     }
 
     private fun setupVideoPreview(uri: Uri) {
@@ -964,6 +1106,12 @@ class MainActivity : AppCompatActivity() {
             binding.processButton.isEnabled = !busy
             binding.selectButton.isEnabled = !busy
             checkUpdatesButton.isEnabled = !busy
+            qualitySpinner.isEnabled = !busy
+            formatSpinner.isEnabled = !busy
+            scanSpeedSpinner.isEnabled = !busy
+            transitionStyleSpinner.isEnabled = !busy
+            experimentalModeSwitch.isEnabled = !busy
+            experimentalDownscaleSpinner.isEnabled = !busy && experimentalModeSwitch.isChecked
             saveCompilationButton.isEnabled = !busy && pendingCompilationFile != null
             discardCompilationButton.isEnabled = !busy && pendingCompilationFile != null
             playCompilationPreviewButton.isEnabled = !busy && pendingCompilationFile != null
@@ -1092,8 +1240,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun selectedScanProfile(): ScanProfile {
-        val index = scanSpeedSpinner.selectedItemPosition.coerceIn(0, scanProfiles.lastIndex)
-        return scanProfiles[index]
+        return selectedCheckpointProfile()
     }
 
     private fun readScanWindow(): ScanWindow {
@@ -1606,7 +1753,7 @@ class MainActivity : AppCompatActivity() {
     }
 }
 
-private class VideoCompilationEngine(private val context: MainActivity) {
+class VideoCompilationEngine(private val context: Context) {
 
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     private val tag = "CompilationEngine"
@@ -1621,6 +1768,8 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         sourceRotationDegrees: Int,
         scanProfileLabel: String,
         transitionStyle: TransitionStyle,
+        experimentalDownscaleSize: Int = 0,
+        fallbackUsed: Boolean = false,
         progress: (String, Int) -> Unit
     ): ScanFindResult = withContext(Dispatchers.IO) {
         Log.d(tag, "Starting scan for number transitions: $sourceUri")
@@ -1640,71 +1789,49 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         }
         val timing = ScanTimingSummary()
         val scanConfig = when (scanMode) {
-            ScanMode.FastChangeMap -> ChangeMapConfig(
+            ScanMode.StableCheckpoint -> ChangeMapConfig(
                 sampleStepMs = frameStepMs.coerceAtLeast(500L),
-                signatureScaleWidthPx = if (frameStepMs <= 750L) 220 else 280,
+                signatureScaleWidthPx = 180,
                 candidatePadMs = 3_000L,
-                candidateMergeGapMs = 1_200L,
-                changeThreshold = 7.2f,
+                candidateMergeGapMs = 1_000L,
+                changeThreshold = 7.0f,
                 periodicProbeMs = 2_800L,
                 neighborhoodStepMs = 500L,
-                refineWindowMs = 2_500L,
+                refineWindowMs = 2_700L,
                 refineIterations = 10,
-                dedupeMs = 1_250L,
+                dedupeMs = 1_200L,
                 prefirstProbeMs = 2_500L,
-                maxVisualSamples = 1_500,
-                totalScanBudgetMs = 42_000L,
-                ocrBudgetMs = 18_000L,
-                maxCandidateWindows = 48,
+                maxVisualSamples = 3_000,
+                totalScanBudgetMs = 65_000L,
+                ocrBudgetMs = 28_000L,
+                maxCandidateWindows = 64,
                 ocrFrameWidthPx = 240,
-                stableMaxStepMs = 4_000L,
+                stableMaxStepMs = 5_000L,
                 stableRampSamples = 3,
                 denseRefineStepMs = 250L,
                 baselineStepMs = frameStepMs.coerceAtLeast(500L)
             )
-            ScanMode.AccurateChangeMap -> ChangeMapConfig(
-                sampleStepMs = frameStepMs.coerceAtLeast(250L),
-                signatureScaleWidthPx = if (frameStepMs <= 500L) 260 else 320,
-                candidatePadMs = 4_000L,
-                candidateMergeGapMs = 1_000L,
-                changeThreshold = 6.2f,
-                periodicProbeMs = 2_000L,
-                neighborhoodStepMs = 300L,
-                refineWindowMs = 3_500L,
-                refineIterations = 12,
-                dedupeMs = 900L,
-                prefirstProbeMs = 3_500L,
-                maxVisualSamples = 2_000,
-                totalScanBudgetMs = 48_000L,
-                ocrBudgetMs = 24_000L,
-                maxCandidateWindows = 64,
-                ocrFrameWidthPx = 280,
-                stableMaxStepMs = 2_500L,
-                stableRampSamples = 3,
-                denseRefineStepMs = 150L,
-                baselineStepMs = frameStepMs.coerceAtLeast(250L)
-            )
-            ScanMode.DenseRefine -> ChangeMapConfig(
-                sampleStepMs = frameStepMs.coerceAtLeast(150L),
-                signatureScaleWidthPx = 300,
+            ScanMode.Experimental -> ChangeMapConfig(
+                sampleStepMs = 1_000L,
+                signatureScaleWidthPx = experimentalDownscaleSize.coerceIn(8, 64).coerceAtLeast(16),
                 candidatePadMs = 4_500L,
-                candidateMergeGapMs = 900L,
-                changeThreshold = 5.5f,
-                periodicProbeMs = 1_500L,
-                neighborhoodStepMs = 250L,
-                refineWindowMs = 4_000L,
-                refineIterations = 14,
-                dedupeMs = 650L,
-                prefirstProbeMs = 3_500L,
-                maxVisualSamples = 2_500,
-                totalScanBudgetMs = 55_000L,
-                ocrBudgetMs = 30_000L,
-                maxCandidateWindows = 84,
-                ocrFrameWidthPx = 320,
-                stableMaxStepMs = 1_500L,
-                stableRampSamples = 2,
-                denseRefineStepMs = 100L,
-                baselineStepMs = frameStepMs.coerceAtLeast(150L)
+                candidateMergeGapMs = 1_100L,
+                changeThreshold = 3.5f,
+                periodicProbeMs = 1_000L,
+                neighborhoodStepMs = 1_000L,
+                refineWindowMs = 4_200L,
+                refineIterations = 11,
+                dedupeMs = 700L,
+                prefirstProbeMs = 2_200L,
+                maxVisualSamples = 6_000,
+                totalScanBudgetMs = 120_000L,
+                ocrBudgetMs = 45_000L,
+                maxCandidateWindows = 120,
+                ocrFrameWidthPx = experimentalDownscaleSize.coerceAtLeast(16),
+                stableMaxStepMs = 6_000L,
+                stableRampSamples = 4,
+                denseRefineStepMs = 250L,
+                baselineStepMs = 1_000L
             )
         }
 
@@ -1893,6 +2020,8 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                 var transitionMs: Long? = null
                 var transitionLabel = "Transition"
                 var transitionTargetNumber: Int? = afterNumber.value
+                val transitionEvidence = ArrayList<String>(4)
+                transitionEvidence.add("Visual pass reason=${candidate.reason}")
 
                 if (!hasCapturedFirstOne && afterNumber.value == 1 && beforeNumber.value != 1) {
                     val firstOneMs = locateFirstNumberAppearance(
@@ -1911,7 +2040,10 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                         transitionMs = firstOneMs.timeMs
                         transitionLabel = "First 1"
                         transitionTargetNumber = 1
+                        transitionEvidence.add("Detected first overlay 1")
                         hasCapturedFirstOne = true
+                    } else {
+                        transitionEvidence.add("Could not locate first overlay 1")
                     }
                 }
 
@@ -1936,6 +2068,7 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                         transitionMs = refined.timeMs
                         transitionLabel = "Number ${beforeNumber.value} -> ${afterNumber.value}"
                         transitionTargetNumber = afterNumber.value
+                        transitionEvidence.add("Refined transition between OCR values")
                     }
                 }
 
@@ -1956,13 +2089,23 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                         transitionMs = firstAppearMs.timeMs
                         transitionLabel = "Start ${afterNumber.value}"
                         transitionTargetNumber = afterNumber.value
+                        transitionEvidence.add("Detected first appearance from unknown baseline")
+                    } else {
+                        transitionEvidence.add("Could not bracket start timestamp")
                     }
                 }
 
                 if (transitionMs == null) {
                     rejectedCandidates++
+                    transitionEvidence.add("No valid OCR timestamp found")
                     continue
                 }
+                val toNumber = transitionTargetNumber
+                    ?: run {
+                        rejectedCandidates++
+                        transitionEvidence.add("No confirmed target number")
+                        continue
+                    }
                 val transitionAtMs = transitionMs
                 val shouldAdd = uniqueTransitions.lastOrNull()?.let { transitionAtMs - it > scanConfig.dedupeMs } ?: true
                 if (shouldAdd) {
@@ -1973,17 +2116,25 @@ private class VideoCompilationEngine(private val context: MainActivity) {
 
                 val cutStartMs = max(0L, transitionAtMs - 10_000L)
                 val cutEndMs = min(durationMs, transitionAtMs + 30_000L)
+                val fromNumber = beforeNumber.value
+                if (fromNumber != null && toNumber != fromNumber + 1) {
+                    transitionEvidence.add("Non-sequential transition ${fromNumber} -> ${toNumber}")
+                }
+                if (fromNumber == null) {
+                    transitionEvidence.add("Initial transition from no-number state")
+                }
                 acceptedTransitions++
                 transitionMarks.add(
                     TransitionMark(
                         eventBoundaryMs = transitionAtMs,
-                        fromNumber = beforeNumber.value,
-                        toNumber = transitionTargetNumber,
-                        confidence = if (beforeNumber.value != null && transitionTargetNumber != null) 1.0f else 0.75f,
+                        fromNumber = fromNumber,
+                        toNumber = toNumber,
+                        confidence = if (fromNumber != null && toNumber == fromNumber + 1) 1.0f else 0.7f,
                         requestedCutStartMs = cutStartMs,
                         requestedCutEndMs = cutEndMs,
                         candidateReason = candidate.reason.name,
-                        candidatePeakScore = candidate.peakScore
+                        candidatePeakScore = candidate.peakScore,
+                        evidence = transitionEvidence
                     )
                 )
                 val progressPercent = min(100, ((transitionAtMs.toFloat() / durationMs.toFloat()) * 100f + 1).toInt())
@@ -2024,13 +2175,24 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             val report = ScanFindReport(
                 sourceUri = sourceUri.toString(),
                 profileLabel = scanProfileLabel,
+                scannerMode = scanMode,
                 scanWindow = scanWindow,
                 frameStepMs = frameStepMs,
+                checkpointIntervalMs = frameStepMs,
+                experimentalDownscaleSize = if (scanMode == ScanMode.Experimental) experimentalDownscaleSize else 0,
+                videoDurationMs = durationMs,
+                wallClockScanMs = wallClockMs,
+                scanSpeedMultiple = throughput,
+                candidateWindows = candidateWindows.size,
                 candidatesFound = candidateWindows.size,
                 mode = scanMode.name,
                 durationMs = durationMs,
                 transitionsFound = merged.size,
                 timing = timing,
+                acceptedTransitions = acceptedTransitions,
+                rejectedCandidates = rejectedCandidates,
+                fallbackUsed = fallbackUsed,
+                failureReason = null,
                 metrics = ScanMetrics(
                     scannerVersion = "v0.15.1-safe-roi-windowed",
                     wallClockMs = wallClockMs,
@@ -2397,28 +2559,36 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         sourceWidth: Int = 0,
         sourceHeight: Int = 0
     ): Bitmap? {
-        val timeUs = cursorMs * 1000L
-        val decodeWidth = targetWidthPx.coerceAtLeast(0)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 && decodeWidth > 0) {
-            val decodeHeight = scaledHeightForWidth(decodeWidth, sourceRotationDegrees, sourceWidth, sourceHeight)
-            if (decodeHeight > 0) {
-                return retriever.getScaledFrameAtTime(
-                    timeUs,
-                    MediaMetadataRetriever.OPTION_CLOSEST,
-                    decodeWidth,
-                    decodeHeight
-                ) ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+        return try {
+            val timeUs = cursorMs * 1000L
+            val decodeWidth = targetWidthPx.coerceAtLeast(0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 && decodeWidth > 0) {
+                val decodeHeight = scaledHeightForWidth(decodeWidth, sourceRotationDegrees, sourceWidth, sourceHeight)
+                if (decodeHeight > 0) {
+                    retriever.getScaledFrameAtTime(
+                        timeUs,
+                        MediaMetadataRetriever.OPTION_CLOSEST,
+                        decodeWidth,
+                        decodeHeight
+                    ) ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                } else {
+                    null
+                }
+            } else {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    retriever.getScaledFrameAtTime(
+                        timeUs,
+                        MediaMetadataRetriever.OPTION_CLOSEST,
+                        640,
+                        360
+                    ) ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                } else {
+                    retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                }
             }
-        }
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            retriever.getScaledFrameAtTime(
-                timeUs,
-                MediaMetadataRetriever.OPTION_CLOSEST,
-                640,
-                360
-            ) ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
-        } else {
-            retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+        } catch (e: Exception) {
+            Log.w(tag, "Frame fetch failed at ${cursorMs}ms", e)
+            null
         }
     }
 
@@ -2429,15 +2599,20 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         private val sourceHeight: Int
     ) : FrameProvider {
         override suspend fun frameAt(timeMs: Long, targetWidthPx: Int): DecodedFrame? {
-            val bitmap = getAnalysisFrameAtTime(
-                retriever = retriever,
-                cursorMs = timeMs,
-                targetWidthPx = targetWidthPx,
-                sourceRotationDegrees = sourceRotationDegrees,
-                sourceWidth = sourceWidth,
-                sourceHeight = sourceHeight
-            ) ?: return null
-            return DecodedFrame(timeMs, bitmap)
+            return try {
+                val bitmap = getAnalysisFrameAtTime(
+                    retriever = retriever,
+                    cursorMs = timeMs,
+                    targetWidthPx = targetWidthPx,
+                    sourceRotationDegrees = sourceRotationDegrees,
+                    sourceWidth = sourceWidth,
+                    sourceHeight = sourceHeight
+                ) ?: return null
+                DecodedFrame(timeMs, bitmap)
+            } catch (e: Exception) {
+                Log.w(tag, "Frame decode failed at $timeMs", e)
+                null
+            }
         }
 
         override suspend fun decodeWindow(
@@ -2451,7 +2626,11 @@ private class VideoCompilationEngine(private val context: MainActivity) {
             val safeStepMs = sampleEveryMs.coerceAtLeast(50L)
             var cursorMs = startMs.coerceAtLeast(0L)
             while (cursorMs <= endMs) {
-                frameAt(cursorMs, targetWidthPx)?.let { frames.add(it) }
+                try {
+                    frameAt(cursorMs, targetWidthPx)?.let { frames.add(it) }
+                } catch (_: Exception) {
+                    // Defensive: allow scan to continue even if a single decode frame fails.
+                }
                 val nextMs = min(endMs, cursorMs + safeStepMs)
                 if (nextMs == cursorMs) break
                 cursorMs = nextMs
@@ -2463,8 +2642,10 @@ private class VideoCompilationEngine(private val context: MainActivity) {
     }
 
     private fun computeRoiSignature(frame: Bitmap, scanWindow: ScanWindow, sourceRotationDegrees: Int): RoiSignature {
+        if (frame.width <= 0 || frame.height <= 0) return RoiSignature(IntArray(64), 0)
         val normalizedFrame = if (sourceRotationDegrees == 0) frame else normalizeBitmapForOcr(frame, sourceRotationDegrees)
         return try {
+            if (scanWindow.widthPercent <= 0f || scanWindow.heightPercent <= 0f) return RoiSignature(IntArray(64), 0)
             val startX = (normalizedFrame.width * scanWindow.xPercent).roundToInt().coerceIn(0, normalizedFrame.width - 1)
             val startY = (normalizedFrame.height * scanWindow.yPercent).roundToInt().coerceIn(0, normalizedFrame.height - 1)
             val roiWidth = (normalizedFrame.width * scanWindow.widthPercent).roundToInt().coerceIn(1, normalizedFrame.width - startX)
@@ -2486,6 +2667,9 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                 }
             }
             RoiSignature(grid, total / grid.size)
+        } catch (e: Exception) {
+            Log.w(tag, "Could not build ROI signature", e)
+            RoiSignature(IntArray(64), 0)
         } finally {
             if (normalizedFrame !== frame) {
                 normalizedFrame.recycle()
@@ -2531,6 +2715,18 @@ private class VideoCompilationEngine(private val context: MainActivity) {
         val payload = JSONObject().apply {
             put("sourceUri", report.sourceUri)
             put("profileLabel", report.profileLabel)
+            put("scannerMode", report.scannerMode.name)
+            put("checkpointIntervalMs", report.checkpointIntervalMs)
+            put("scanSpeedMultiple", report.scanSpeedMultiple)
+            put("experimentalDownscaleSize", report.experimentalDownscaleSize)
+            put("videoDurationMs", report.videoDurationMs)
+            put("wallClockScanMs", report.wallClockScanMs)
+            put("candidateWindows", report.candidateWindows)
+            put("acceptedTransitions", report.acceptedTransitions)
+            put("rejectedCandidates", report.rejectedCandidates)
+            put("fallbackUsed", report.fallbackUsed)
+            put("failureReason", report.failureReason)
+            put("ocrCallCount", report.metrics.ocrCalls)
             put("frameStepMs", report.frameStepMs)
             put("candidatesFound", report.candidatesFound)
             put("mode", report.mode)
@@ -2573,6 +2769,9 @@ private class VideoCompilationEngine(private val context: MainActivity) {
                         put("requestedCutEndMs", mark.requestedCutEndMs)
                         put("candidateReason", mark.candidateReason)
                         put("candidatePeakScore", mark.candidatePeakScore)
+                        put("evidence", JSONArray().apply {
+                            mark.evidence.forEach { value -> put(value) }
+                        })
                     })
                 }
             })
@@ -2856,12 +3055,23 @@ private data class ScanFindResult(
 private data class ScanFindReport(
     val sourceUri: String,
     val profileLabel: String,
+    val scannerMode: ScanMode,
+    val checkpointIntervalMs: Long,
+    val scanSpeedMultiple: Float,
+    val experimentalDownscaleSize: Int,
+    val videoDurationMs: Long,
+    val wallClockScanMs: Long,
+    val candidateWindows: Int,
     val scanWindow: ScanWindow,
     val frameStepMs: Long,
     val candidatesFound: Int,
     val mode: String,
     val durationMs: Long,
     val transitionsFound: Int,
+    val acceptedTransitions: Int,
+    val rejectedCandidates: Int,
+    val fallbackUsed: Boolean,
+    val failureReason: String?,
     val timing: ScanTimingSummary,
     val metrics: ScanMetrics,
     val transitionMarks: List<TransitionMark>,
@@ -2889,12 +3099,13 @@ private enum class CandidateReason { InitialProbe, VisualChange, PeriodicProbe }
 private data class TransitionMark(
     val eventBoundaryMs: Long,
     val fromNumber: Int?,
-    val toNumber: Int?,
+    val toNumber: Int,
     val confidence: Float,
     val requestedCutStartMs: Long,
     val requestedCutEndMs: Long,
     val candidateReason: String,
-    val candidatePeakScore: Float
+    val candidatePeakScore: Float,
+    val evidence: List<String>
 )
 
 private data class TimedDetection(
@@ -2989,7 +3200,7 @@ private data class UpdateInfo(
 private data class SegmentWindow(val startMs: Long, val endMs: Long)
 data class ScanWindow(val xPercent: Float, val yPercent: Float, val widthPercent: Float, val heightPercent: Float)
 private data class ScanProfile(val label: String, val frameStepMs: Long, val mode: ScanMode)
-private enum class ScanMode { FastChangeMap, AccurateChangeMap, DenseRefine }
+private enum class ScanMode { StableCheckpoint, Experimental }
 private enum class RoiTouchMode { NONE, MOVE, RESIZE }
 
 private enum class TransitionStyle(val label: String, val edgePaddingMs: Long, val mergeGapMs: Long) {

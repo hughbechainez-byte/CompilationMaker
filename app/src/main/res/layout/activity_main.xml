@@ -188,6 +188,38 @@
             android:layout_height="wrap_content" />
 
         <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="Scanner mode" />
+
+        <CheckBox
+            android:id="@+id/experimentalModeSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Experimental Fast ROI Scan"
+            android:checked="false" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Experimental downscale size" />
+
+        <Spinner
+            android:id="@+id/experimentalDownscalePicker"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/experimentalModeWarning"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:visibility="gone"
+            android:text="Experimental Fast ROI Scan may be faster but can miss or misread changes. If it fails, the app will fall back to stable checkpoint scan." />
+
+        <TextView
             android:id="@+id/transitionStyleLabel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

@@ -1,8 +1,8 @@
 {
-  "version": "v0.15.1",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.15.1",
+  "version": "v0.15.2",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.15.2",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.15.1/CompilationMaker-v0.15.1.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.15.2/CompilationMaker-v0.15.2.apk"
   },
-  "notes": "Release 0.15.1 fixes small-ROI ML Kit input handling, resilient candidate skipping, clearer diagnostics, and throttled progress notifications."
+  "notes": "Release 0.15.2 adds stabilization patch: restore checkpoint-based scanning, add experimental fast ROI mode with 1/3/5 minute checkpoints, background WorkManager scan/export, safer crash handling, and richer scan reports."
 }
