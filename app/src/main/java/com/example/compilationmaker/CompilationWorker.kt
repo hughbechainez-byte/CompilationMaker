@@ -12,7 +12,6 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
-import androidx.work.Data
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
@@ -40,16 +39,16 @@ class CompilationWorker(
         val scanWindowRaw = inputData.getString(KEY_SCAN_WINDOW)
 
         if (sourceUriRaw.isNullOrBlank()) {
-            return@withContext Result.failure(workDataOf(KEY_ERROR_MESSAGE, "Missing source video"))
+            return@withContext Result.failure(workDataOf(KEY_ERROR_MESSAGE to "Missing source video"))
         }
 
         setForegroundCompat("starting", "Preparing compilation", 0)
         setProgressCompat("starting", "Preparing compilation", 0)
 
         val sourceUri = runCatching { Uri.parse(sourceUriRaw) }.getOrNull()
-            ?: return@withContext Result.failure(workDataOf(KEY_ERROR_MESSAGE, "Invalid source URI"))
+            ?: return@withContext Result.failure(workDataOf(KEY_ERROR_MESSAGE to "Invalid source URI"))
 
-        val quality = ExportFormat.values().getOrNull(qualityOrdinal) ?: ExportFormat.Mp4
+        val quality = ExportQuality.values().getOrNull(qualityOrdinal) ?: ExportQuality.Medium
         val format = ExportFormat.values().getOrNull(formatOrdinal) ?: ExportFormat.Mp4
         val transitionStyle = TransitionStyle.values().getOrNull(transitionOrdinal) ?: TransitionStyle.Instant
         val scanMode = ScanMode.values().getOrNull(scanModeOrdinal) ?: ScanMode.StableCheckpoint
@@ -127,25 +126,20 @@ class CompilationWorker(
             val finalReportPath = reportPath
             val failure = if (fallbackUsed) failureReason else null
             val result = workDataOf(
-                KEY_OUTPUT_PATH,
-                outputFile.absolutePath,
-                KEY_FORMAT_ORDINAL,
-                format.ordinal,
-                KEY_REPORT_PATH,
-                finalReportPath,
-                KEY_FALLBACK_USED,
-                fallbackUsed,
-                KEY_ERROR_MESSAGE,
-                failure
+                KEY_OUTPUT_PATH to outputFile.absolutePath,
+                KEY_FORMAT_ORDINAL to format.ordinal,
+                KEY_REPORT_PATH to finalReportPath,
+                KEY_FALLBACK_USED to fallbackUsed,
+                KEY_ERROR_MESSAGE to failure
             )
             setProgressCompat("completed", "Compilation complete", 100, fallbackUsed)
             setForegroundCompat("completed", "Compilation complete", 100, fallbackUsed)
             Result.success(result)
         } catch (cancelled: CancellationException) {
-            Result.failure(workDataOf(KEY_ERROR_MESSAGE, cancelled.message ?: "Cancelled", KEY_FALLBACK_USED, fallbackUsed))
+            Result.failure(workDataOf(KEY_ERROR_MESSAGE to (cancelled.message ?: "Cancelled"), KEY_FALLBACK_USED to fallbackUsed))
         } catch (e: Exception) {
             Log.e("CompilationWorker", "Compilation failed", e)
-            Result.failure(workDataOf(KEY_ERROR_MESSAGE, e.message ?: "Compilation failed", KEY_FALLBACK_USED, fallbackUsed))
+            Result.failure(workDataOf(KEY_ERROR_MESSAGE to (e.message ?: "Compilation failed"), KEY_FALLBACK_USED to fallbackUsed))
         }
     }
 
@@ -224,16 +218,12 @@ class CompilationWorker(
     ) {
         if (percent < 0 || percent > 100) return
         val data = workDataOf(
-            KEY_PROGRESS_PHASE,
-            phase,
-            KEY_PROGRESS_MESSAGE,
-            message,
-            KEY_PROGRESS_PERCENT,
-            percent,
-            KEY_FALLBACK_USED,
-            fallbackUsed
+            KEY_PROGRESS_PHASE to phase,
+            KEY_PROGRESS_MESSAGE to message,
+            KEY_PROGRESS_PERCENT to percent,
+            KEY_FALLBACK_USED to fallbackUsed
         )
-        setProgress(data)
+        setProgressAsync(data)
     }
 
     private fun setForegroundCompat(

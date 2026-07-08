@@ -2101,11 +2101,11 @@ class VideoCompilationEngine(private val context: Context) {
                     continue
                 }
                 val toNumber = transitionTargetNumber
-                    ?: run {
-                        rejectedCandidates++
-                        transitionEvidence.add("No confirmed target number")
-                        continue
-                    }
+                if (toNumber == null) {
+                    rejectedCandidates++
+                    transitionEvidence.add("No confirmed target number")
+                    continue
+                }
                 val transitionAtMs = transitionMs
                 val shouldAdd = uniqueTransitions.lastOrNull()?.let { transitionAtMs - it > scanConfig.dedupeMs } ?: true
                 if (shouldAdd) {
@@ -3035,7 +3035,7 @@ class VideoCompilationEngine(private val context: Context) {
     }
 }
 
-private data class ScanTimingSummary(
+data class ScanTimingSummary(
     var decodeMs: Long = 0L,
     var cropMs: Long = 0L,
     var preprocessMs: Long = 0L,
@@ -3045,7 +3045,7 @@ private data class ScanTimingSummary(
     fun totalMs(): Long = decodeMs + cropMs + preprocessMs + ocrMs + mergeMs
 }
 
-private data class ScanFindResult(
+data class ScanFindResult(
     val segments: List<SegmentWindow>,
     val timing: ScanTimingSummary,
     val transitionMarks: List<TransitionMark>,
@@ -3096,7 +3096,7 @@ private data class TransitionCandidateWindow(
 
 private enum class CandidateReason { InitialProbe, VisualChange, PeriodicProbe }
 
-private data class TransitionMark(
+data class TransitionMark(
     val eventBoundaryMs: Long,
     val fromNumber: Int?,
     val toNumber: Int,
@@ -3129,7 +3129,7 @@ private data class DecodedFrame(
     val bitmap: Bitmap
 )
 
-private data class ScanMetrics(
+data class ScanMetrics(
     val scannerVersion: String,
     val wallClockMs: Long,
     val baselineSamplesEstimate: Int,
@@ -3197,24 +3197,24 @@ private data class UpdateInfo(
     val releaseNotes: String
 )
 
-private data class SegmentWindow(val startMs: Long, val endMs: Long)
+data class SegmentWindow(val startMs: Long, val endMs: Long)
 data class ScanWindow(val xPercent: Float, val yPercent: Float, val widthPercent: Float, val heightPercent: Float)
 private data class ScanProfile(val label: String, val frameStepMs: Long, val mode: ScanMode)
-private enum class ScanMode { StableCheckpoint, Experimental }
+enum class ScanMode { StableCheckpoint, Experimental }
 private enum class RoiTouchMode { NONE, MOVE, RESIZE }
 
-private enum class TransitionStyle(val label: String, val edgePaddingMs: Long, val mergeGapMs: Long) {
+enum class TransitionStyle(val label: String, val edgePaddingMs: Long, val mergeGapMs: Long) {
     Instant("Instant cuts", 0L, 0L),
     Gradual("Gradual transitions", 3_000L, 2_000L)
 }
 
-private enum class ExportQuality(val label: String, val preset: String, val crf: Int, val extraVideoArgs: List<String>) {
+enum class ExportQuality(val label: String, val preset: String, val crf: Int, val extraVideoArgs: List<String>) {
     Low("Low (faster)", "ultrafast", 32, listOf()),
     Medium("Medium", "medium", 23, listOf("-movflags", "+faststart")),
     High("High (slower)", "slow", 18, listOf("-movflags", "+faststart"))
 }
 
-private enum class ExportFormat(
+enum class ExportFormat(
     val label: String,
     val extension: String,
     val mimeType: String,
