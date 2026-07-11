@@ -227,11 +227,7 @@ class MainActivity : AppCompatActivity() {
     private val qualityOptions = arrayOf(ExportQuality.Low, ExportQuality.Medium, ExportQuality.High)
     private val formatOptions = arrayOf(ExportFormat.Mp4, ExportFormat.Webm, ExportFormat.Mov)
     private val transitionStyleOptions = arrayOf(TransitionStyle.Instant, TransitionStyle.Gradual)
-    private val checkpointProfiles = arrayOf(
-        ScanProfile("Fast change-map (500ms)", 500L, ScanMode.StableCheckpoint),
-        ScanProfile("Accurate change-map (250ms)", 250L, ScanMode.StableCheckpoint),
-        ScanProfile("Dense (125ms) [debug]", 125L, ScanMode.Experimental)
-    )
+    private val checkpointProfiles = compilationScanProfiles()
     private val experimentalDownscaleOptions = intArrayOf(16, 24, 32, 40)
     private val defaultScanWindow = ScanWindow(0.0f, 0.8f, 0.10f, 0.30f)
     private val compilationWorkName = "compilation_scan_export"
@@ -3908,7 +3904,17 @@ private data class FrameProviderSelection(
 
 data class SegmentWindow(val startMs: Long, val endMs: Long)
 data class ScanWindow(val xPercent: Float, val yPercent: Float, val widthPercent: Float, val heightPercent: Float)
-private data class ScanProfile(val label: String, val frameStepMs: Long, val mode: ScanMode)
+internal data class ScanProfile(val label: String, val frameStepMs: Long, val mode: ScanMode)
+
+internal fun compilationScanProfiles(): Array<ScanProfile> = arrayOf(
+    ScanProfile("Fast change-map (500ms)", 500L, ScanMode.StableCheckpoint),
+    ScanProfile("Accurate change-map (250ms)", 250L, ScanMode.StableCheckpoint),
+    ScanProfile("3-minute checkpoints", 180_000L, ScanMode.StableCheckpoint),
+    ScanProfile("1-minute checkpoints", 60_000L, ScanMode.StableCheckpoint),
+    ScanProfile("5-minute checkpoints", 300_000L, ScanMode.StableCheckpoint),
+    ScanProfile("Dense (125ms) [debug]", 125L, ScanMode.Experimental)
+)
+
 enum class ScanMode { StableCheckpoint, Experimental }
 private enum class RoiTouchMode { NONE, MOVE, RESIZE }
 

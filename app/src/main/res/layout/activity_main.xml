@@ -185,14 +185,12 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="Scan interval"
-            android:visibility="gone" />
+            android:text="Scan interval" />
 
         <Spinner
             android:id="@+id/scanSpeedPicker"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:visibility="gone" />
+            android:layout_height="wrap_content" />
 
         <TextView
             android:id="@+id/experimentalModeLabel"
