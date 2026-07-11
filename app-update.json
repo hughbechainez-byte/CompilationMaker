@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.1",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.1",
+  "version": "v0.17.2",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.2",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.1/CompilationMaker-v0.17.1.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.2/CompilationMaker-v0.17.2.apk"
   },
-  "notes": "Release 0.17.1: crash log viewer button, persisted last-crash capture, and copy/clear crash report actions.",
+  "notes": "Release 0.17.2: persistent rolling app trace, crash snapshot capture, and log viewer copy/clear actions.",
   "updates": [
+    {
+      "version": "v0.17.2",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.2",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.2/CompilationMaker-v0.17.2.apk",
+      "notes": "persistent rolling app trace, crash snapshot capture, and log viewer copy/clear actions"
+    },
     {
       "version": "v0.17.1",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.1",
