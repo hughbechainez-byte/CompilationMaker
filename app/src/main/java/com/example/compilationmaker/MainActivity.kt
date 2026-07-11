@@ -5,6 +5,8 @@ import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
@@ -217,6 +219,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusFeedText: TextView
     private lateinit var statusFeedScroll: ScrollView
     private lateinit var checkUpdatesButton: Button
+    private lateinit var crashLogButton: Button
     private lateinit var transitionStyleSpinner: Spinner
     private lateinit var experimentalModeSwitch: CheckBox
     private lateinit var experimentalDownscaleSpinner: Spinner
@@ -307,6 +310,7 @@ class MainActivity : AppCompatActivity() {
         statusFeedText = binding.statusFeedText
         statusFeedScroll = binding.statusFeedScroll
         checkUpdatesButton = binding.checkUpdatesButton
+        crashLogButton = binding.crashLogButton
         experimentalModeSwitch = binding.experimentalModeSwitch
         experimentalDownscaleSpinner = binding.experimentalDownscalePicker
         experimentalModeWarningText = binding.experimentalModeWarning
@@ -534,6 +538,10 @@ class MainActivity : AppCompatActivity() {
             checkForUpdates(force = true)
         }
 
+        crashLogButton.setOnClickListener {
+            showCrashLogDialog()
+        }
+
         experimentalModeSwitch.setOnCheckedChangeListener { _, checked ->
             experimentalDownscaleSpinner.isEnabled = checked
             experimentalModeWarningText.visibility = if (checked) View.VISIBLE else View.GONE
@@ -580,6 +588,9 @@ class MainActivity : AppCompatActivity() {
         binding.progressBar.max = 100
         progressPercentText.text = "0%"
         clearStatusFeed("Ready")
+        if (readCrashReport(this) != null) {
+            emitProgress("Crash log available. Tap Open crash log.", 100)
+        }
         restoreActiveCompilationWork()
     }
 
@@ -1248,6 +1259,25 @@ class MainActivity : AppCompatActivity() {
         binding.statusText.text = initialMessage
         progressPercentText.text = "0%"
         binding.progressBar.progress = 0
+    }
+
+    private fun showCrashLogDialog() {
+        val crashLog = readCrashReport(this)
+        val message = crashLog ?: "No saved crash log found."
+        AlertDialog.Builder(this)
+            .setTitle("Crash log")
+            .setMessage(message)
+            .setPositiveButton("Copy") { _, _ ->
+                val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("CompilationMaker crash log", message))
+                emitProgress("Crash log copied to clipboard.", 100)
+            }
+            .setNeutralButton("Clear") { _, _ ->
+                clearCrashReport(this)
+                emitProgress("Crash log cleared.", 100)
+            }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun selectedScanProfile(): ScanProfile {

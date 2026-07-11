@@ -317,6 +317,13 @@
             android:layout_marginTop="10dp"
             android:text="Check for updates" />
 
+        <Button
+            android:id="@+id/crashLogButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Open crash log" />
+
         <ProgressBar
             android:id="@+id/progressBar"
             style="@android:style/Widget.Material.Light.ProgressBar.Horizontal"
