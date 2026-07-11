@@ -1,8 +1,8 @@
 {
-  "version": "v0.15.2",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/blob/master/releases/CompilationMaker-v0.15.2.apk",
+  "version": "v0.16.4",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.4",
   "apk": {
-    "url": "https://raw.githubusercontent.com/hughbechainez-byte/CompilationMaker/master/releases/CompilationMaker-v0.15.2.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.4/CompilationMaker-v0.16.4.apk"
   },
-  "notes": "Release 0.15.2 adds stabilization patch: restore checkpoint-based scanning, add experimental fast ROI mode with 1/3/5 minute checkpoints, background WorkManager scan/export, safer crash handling, and richer scan reports."
+  "notes": "Release 0.16.4: finalize change-map scan optimization (500ms fast mode default), two-hit number confirmation, high-confidence OCR fallback, and richer ROI feature scoring for faster and more accurate number-change detection."
 }
