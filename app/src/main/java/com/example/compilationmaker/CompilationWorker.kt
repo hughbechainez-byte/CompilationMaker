@@ -97,14 +97,22 @@ class CompilationWorker(
 
             val reportPath = scanResult.reportPath
 
-            var windows = scanResult.segments
+            val windows = scanResult.segments
             if (windows.isEmpty()) {
-                val durationMs = scanResult.durationMs
-                if (durationMs > 0L) {
-                    windows = listOf(SegmentWindow(0L, minOf(30_000L, durationMs))
-                    )
-                    setProgressCompat("scan", "No transitions found, using short safety clip", 52)
+                val message = if (scanResult.durationMs > 0L) {
+                    "No confirmed number transitions were detected."
+                } else {
+                    "No confirmed number transitions were detected and the source duration could not be read."
                 }
+                reportPath?.let { augmentReport(it, fallbackUsed, failureReason ?: message) }
+                return@withContext Result.failure(
+                    workDataOf(
+                        KEY_ERROR_MESSAGE to message,
+                        KEY_REPORT_PATH to reportPath,
+                        KEY_FALLBACK_USED to fallbackUsed,
+                        KEY_NO_TRANSITIONS_DETECTED to true
+                    )
+                )
             }
 
             setProgressCompat("export", "Assembling compilation", 55)
@@ -172,7 +180,7 @@ class CompilationWorker(
                 }
                 progress(phase, message, if (scanMode == ScanMode.StableCheckpoint) percent else (percent * 0.5f + 20f).toInt())
             }
-            val durationMs = result.timing.totalMs().coerceAtLeast(0L)
+            val durationMs = resolveSourceDurationMs(result.videoDurationMs, result.timing.totalMs())
             ScanTaskResult(success = true, segments = result.segments, durationMs = durationMs, reportPath = engine.latestScanReportPath)
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -308,6 +316,7 @@ class CompilationWorker(
         const val KEY_OUTPUT_PATH = "outputPath"
         const val KEY_REPORT_PATH = "reportPath"
         const val KEY_FALLBACK_USED = "fallbackUsed"
+        const val KEY_NO_TRANSITIONS_DETECTED = "noTransitionsDetected"
         const val KEY_ERROR_MESSAGE = "errorMessage"
 
         private const val NOTIFICATION_CHANNEL_ID = "compilation_progress"

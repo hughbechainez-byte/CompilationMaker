@@ -11,8 +11,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.graphics.ImageFormat
+import android.graphics.Rect
+import android.graphics.YuvImage
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
 import android.media.MediaExtractor
 import android.media.MediaMetadataRetriever
 import android.media.MediaFormat
@@ -32,8 +37,11 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.util.Log
 import android.util.Base64
+import android.view.Surface
 import android.view.View
 import android.view.MotionEvent
+import android.media.Image
+import android.media.ImageReader
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -68,15 +76,15 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.example.compilationmaker.databinding.ActivityMainBinding
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.util.ArrayDeque
 import java.util.Locale
@@ -1330,29 +1338,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun normalizeRoiWindowForCurrentRotation(saved: ScanWindow, savedRotation: Int): ScanWindow {
-        val from = ((savedRotation % 360) + 360) % 360
-        val to = ((selectedVideoRotationDegrees % 360) + 360) % 360
-        return when ((to - from + 360) % 360) {
-            90 -> ScanWindow(
-                saved.yPercent,
-                1f - saved.xPercent - saved.widthPercent,
-                saved.heightPercent,
-                saved.widthPercent
-            )
-            180 -> ScanWindow(
-                1f - saved.xPercent - saved.widthPercent,
-                1f - saved.yPercent - saved.heightPercent,
-                saved.widthPercent,
-                saved.heightPercent
-            )
-            270 -> ScanWindow(
-                1f - saved.yPercent - saved.heightPercent,
-                saved.xPercent,
-                saved.heightPercent,
-                saved.widthPercent
-            )
-            else -> saved
-        }.coerceInBounds()
+        return rotateScanWindowForCurrentRotation(saved, savedRotation, selectedVideoRotationDegrees)
     }
 
     private fun ScanWindow.coerceInBounds(): ScanWindow {
@@ -1839,7 +1825,7 @@ class MainActivity : AppCompatActivity() {
 
 class VideoCompilationEngine(private val context: Context) {
 
-    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    private val digitRecognizer: DigitRecognizer = MlKitDigitRecognizer(context)
     private val tag = "CompilationEngine"
     var latestScanReportPath: String? = null
         private set
@@ -1862,7 +1848,7 @@ class VideoCompilationEngine(private val context: Context) {
         }
         val sourceWidth = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
         val sourceHeight = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
-        val frameProvider = RetrieverFrameProvider(
+        val retrieverFrameProvider = RetrieverFrameProvider(
             retriever = retriever,
             sourceRotationDegrees = sourceRotationDegrees,
             sourceWidth = sourceWidth,
@@ -1872,8 +1858,8 @@ class VideoCompilationEngine(private val context: Context) {
             Log.d(tag, "Scan source video=${sourceWidth}x${sourceHeight} rotation=${sourceRotationDegrees} roi=${scanWindow.xPercent},${scanWindow.yPercent},${scanWindow.widthPercent},${scanWindow.heightPercent} quality=$scanProfileLabel mode=$scanMode")
         }
         val timing = ScanTimingSummary()
-        val scanConfig = when (scanMode) {
-            ScanMode.StableCheckpoint -> ChangeMapConfig(
+            val scanConfig = when (scanMode) {
+                ScanMode.StableCheckpoint -> ChangeMapConfig(
                 sampleStepMs = frameStepMs.coerceAtLeast(250L),
                 signatureScaleWidthPx = 220,
                 candidatePadMs = 2_500L,
@@ -1919,10 +1905,27 @@ class VideoCompilationEngine(private val context: Context) {
             )
         }
 
+        var frameProvider: FrameProvider = retrieverFrameProvider
+        var frameProviderFallbackReason: String? = null
+
         try {
             val durationMs = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
                 ?: throw IllegalStateException("Could not read duration")
-            if (durationMs <= 0L) return@withContext ScanFindResult(emptyList(), timing, emptyList(), ScanMetrics.empty())
+            if (durationMs <= 0L) return@withContext ScanFindResult(emptyList(), timing, emptyList(), ScanMetrics.empty(), 0L)
+
+            val frameProviderSelection = selectFrameProvider(
+                retrieverFrameProvider = retrieverFrameProvider,
+                sourceUri = sourceUri,
+                sourceRotationDegrees = sourceRotationDegrees,
+                sourceWidth = sourceWidth,
+                sourceHeight = sourceHeight,
+                durationMs = durationMs
+            )
+            frameProvider = frameProviderSelection.provider
+            frameProviderFallbackReason = frameProviderSelection.fallbackReason
+            if (frameProviderSelection.fallbackReason != null) {
+                progress("Frame provider fallback: ${frameProviderSelection.fallbackReason}", 8)
+            }
 
             val scanStartRealtime = SystemClock.elapsedRealtime()
             val adaptiveStepMs = if (scanConfig.maxVisualSamples > 0) {
@@ -1935,13 +1938,15 @@ class VideoCompilationEngine(private val context: Context) {
             }
             val effectivePeriodicProbeMs = max(scanConfig.periodicProbeMs, adaptiveStepMs * 2L)
             val candidateWindows = ArrayList<TransitionCandidateWindow>()
-            var cursorMs = 0L
+            var coarseFramesSeen = 0
+            var stopCoarseScan = false
+            val coarseDecodeStart = SystemClock.elapsedRealtime()
             var previousSignature: RoiSignature? = null
             var msSinceLastCandidate = Long.MAX_VALUE
             var consecutiveChangedSamples = 0
             var pendingChangeStartMs: Long? = null
             var pendingPeakScore = 0f
-            var currentStepMs = adaptiveStepMs
+            val currentStepMs = adaptiveStepMs
             var stableSamples = 0
             var visualSamples = 0
             var skippedStableMs = 0L
@@ -1949,84 +1954,86 @@ class VideoCompilationEngine(private val context: Context) {
             var acceptedTransitions = 0
             var rejectedCandidates = 0
             val transitionMarks = ArrayList<TransitionMark>()
+            try {
+                frameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
+                    if (stopCoarseScan) return@forEachFrameInWindow
+                    if (SystemClock.elapsedRealtime() - scanStartRealtime >= scanConfig.totalScanBudgetMs) {
+                        progress("Scan budget reached. Finalizing from collected candidates", 43)
+                        stopCoarseScan = true
+                        return@forEachFrameInWindow
+                    }
+                    if (!coroutineContext.isActive) {
+                        return@forEachFrameInWindow
+                    }
 
-            while (cursorMs <= durationMs) {
-                if (SystemClock.elapsedRealtime() - scanStartRealtime >= scanConfig.totalScanBudgetMs) {
-                    progress("Scan budget reached. Finalizing from collected candidates", 43)
-                    break
-                }
-                if (!coroutineContext.isActive) {
-                    return@withContext ScanFindResult(emptyList(), timing, emptyList(), ScanMetrics.empty())
-                }
+                    val cursorMs = decoded.timeMs.coerceIn(0L, durationMs)
+                    val percent = ((cursorMs.toFloat() / durationMs.toFloat()) * 100f).toInt().coerceIn(0, 100)
+                    val elapsedSeconds = String.format(Locale.US, "%.1f", cursorMs / 1000f)
+                    val totalSeconds = String.format(Locale.US, "%.1f", durationMs / 1000f)
+                    progress(
+                        "Scanning timeline ${elapsedSeconds}s / ${totalSeconds}s (${percent}%, step ${currentStepMs}ms)",
+                        percent
+                    )
 
-                val percent = ((cursorMs.toFloat() / durationMs.toFloat()) * 100f).toInt().coerceIn(0, 100)
-                val elapsedSeconds = String.format(Locale.US, "%.1f", cursorMs / 1000f)
-                val totalSeconds = String.format(Locale.US, "%.1f", durationMs / 1000f)
-                progress(
-                    "Scanning timeline ${elapsedSeconds}s / ${totalSeconds}s (${percent}%, step ${currentStepMs}ms)",
-                    percent
-                )
-
-                val startDecodeMs = SystemClock.elapsedRealtime()
-                val decoded = frameProvider.frameAt(cursorMs, scanConfig.signatureScaleWidthPx)
-                timing.decodeMs += SystemClock.elapsedRealtime() - startDecodeMs
-                val frame = decoded?.bitmap
-
-                if (frame == null) {
-                    cursorMs += currentStepMs
-                    continue
-                }
-
-                try {
-                    visualSamples++
-                    val signature = computeRoiSignature(frame, scanWindow, sourceRotationDegrees)
-                    val signatureDelta = previousSignature?.let { roiDifference(it, signature) } ?: 0f
-                    val rawVisualChange = signatureDelta >= scanConfig.changeThreshold
-                    if (rawVisualChange) {
-                        consecutiveChangedSamples += 1
-                        if (pendingChangeStartMs == null) {
-                            pendingChangeStartMs = cursorMs
+                    val frame = decoded.bitmap
+                    try {
+                        visualSamples++
+                        val signature = computeRoiSignature(frame, scanWindow, sourceRotationDegrees)
+                        val signatureDelta = previousSignature?.let { roiDifference(it, signature) } ?: 0f
+                        val rawVisualChange = signatureDelta >= scanConfig.changeThreshold
+                        if (rawVisualChange) {
+                            consecutiveChangedSamples += 1
+                            if (pendingChangeStartMs == null) {
+                                pendingChangeStartMs = cursorMs
+                            }
+                            pendingPeakScore = max(pendingPeakScore, signatureDelta)
+                        } else {
+                            consecutiveChangedSamples = 0
+                            pendingChangeStartMs = null
+                            pendingPeakScore = 0f
                         }
-                        pendingPeakScore = max(pendingPeakScore, signatureDelta)
-                    } else {
-                        consecutiveChangedSamples = 0
-                        pendingChangeStartMs = null
-                        pendingPeakScore = 0f
-                    }
 
-                    val visualChangeDetected = rawVisualChange && consecutiveChangedSamples >= 2
-                    val periodicProbe = msSinceLastCandidate >= effectivePeriodicProbeMs
-                    val shouldProbe = previousSignature == null || visualChangeDetected || periodicProbe
-                    val probeSeedMs = if (visualChangeDetected && pendingChangeStartMs != null) {
-                        pendingChangeStartMs
-                    } else {
-                        cursorMs
-                    }
-                    val probePeakScore = if (visualChangeDetected && pendingPeakScore > 0f) {
-                        pendingPeakScore
-                    } else {
-                        signatureDelta
-                    }
-                    if (shouldProbe) {
-                        val padStart = max(0L, probeSeedMs - scanConfig.candidatePadMs)
-                        val padEnd = min(durationMs, probeSeedMs + scanConfig.candidatePadMs)
-                        val seedMs = probeSeedMs
-                        val reason = when {
-                            previousSignature == null -> CandidateReason.InitialProbe
-                            visualChangeDetected -> CandidateReason.VisualChange
-                            else -> CandidateReason.PeriodicProbe
+                        val visualChangeDetected = rawVisualChange && consecutiveChangedSamples >= 2
+                        val periodicProbe = msSinceLastCandidate >= effectivePeriodicProbeMs
+                        val shouldProbe = previousSignature == null || visualChangeDetected || periodicProbe
+                        val probeSeedMs = if (visualChangeDetected) pendingChangeStartMs ?: cursorMs else cursorMs
+                        val probePeakScore = if (visualChangeDetected && pendingPeakScore > 0f) {
+                            pendingPeakScore
+                        } else {
+                            signatureDelta
                         }
-                        if (candidateWindows.isNotEmpty()) {
-                            val last = candidateWindows.last()
-                            if (padStart <= last.endMs + scanConfig.candidateMergeGapMs) {
-                                candidateWindows[candidateWindows.lastIndex] = last.copy(
-                                    startMs = min(last.startMs, padStart),
-                                    endMs = max(last.endMs, padEnd),
-                                    seedMs = (last.seedMs + seedMs) / 2L,
-                                    peakScore = max(last.peakScore, probePeakScore),
-                                    reason = if (last.reason == CandidateReason.VisualChange || reason == CandidateReason.VisualChange) CandidateReason.VisualChange else last.reason,
-                                    sampleCount = last.sampleCount + 1
-                                )
+                        if (shouldProbe) {
+                            val padStart = max(0L, probeSeedMs - scanConfig.candidatePadMs)
+                            val padEnd = min(durationMs, probeSeedMs + scanConfig.candidatePadMs)
+                            val seedMs = probeSeedMs
+                            val reason = when {
+                                previousSignature == null -> CandidateReason.InitialProbe
+                                visualChangeDetected -> CandidateReason.VisualChange
+                                else -> CandidateReason.PeriodicProbe
+                            }
+                            if (candidateWindows.isNotEmpty()) {
+                                val last = candidateWindows.last()
+                                if (padStart <= last.endMs + scanConfig.candidateMergeGapMs) {
+                                    candidateWindows[candidateWindows.lastIndex] = last.copy(
+                                        startMs = min(last.startMs, padStart),
+                                        endMs = max(last.endMs, padEnd),
+                                        seedMs = (last.seedMs + seedMs) / 2L,
+                                        peakScore = max(last.peakScore, probePeakScore),
+                                        reason = if (last.reason == CandidateReason.VisualChange || reason == CandidateReason.VisualChange) CandidateReason.VisualChange else last.reason,
+                                        sampleCount = last.sampleCount + 1
+                                    )
+                                } else {
+                                    candidateWindows.add(
+                                        TransitionCandidateWindow(
+                                            startMs = padStart,
+                                            endMs = padEnd,
+                                            seedMs = seedMs,
+                                            peakScore = probePeakScore,
+                                            reason = reason,
+                                            sampleCount = 1
+                                        )
+                                    )
+                                }
                             } else {
                                 candidateWindows.add(
                                     TransitionCandidateWindow(
@@ -2039,39 +2046,112 @@ class VideoCompilationEngine(private val context: Context) {
                                     )
                                 )
                             }
+                            msSinceLastCandidate = 0L
+                            pendingChangeStartMs = null
+                            pendingPeakScore = 0f
+                            consecutiveChangedSamples = 0
+                            stableSamples = 0
                         } else {
-                            candidateWindows.add(
-                                TransitionCandidateWindow(
-                                    startMs = padStart,
-                                    endMs = padEnd,
-                                    seedMs = seedMs,
-                                    peakScore = probePeakScore,
-                                    reason = reason,
-                                    sampleCount = 1
-                                )
-                            )
+                            msSinceLastCandidate += adaptiveStepMs
+                            stableSamples++
                         }
-                        msSinceLastCandidate = 0L
-                        pendingChangeStartMs = null
-                        pendingPeakScore = 0f
-                        consecutiveChangedSamples = 0
-                        stableSamples = 0
-                        currentStepMs = adaptiveStepMs
-                    } else {
-                        msSinceLastCandidate += currentStepMs
-                        stableSamples++
-                        if (stableSamples >= scanConfig.stableRampSamples) {
-                            val nextStep = min(scanConfig.stableMaxStepMs, currentStepMs * 2L)
-                            skippedStableMs += max(0L, nextStep - currentStepMs)
-                            currentStepMs = nextStep
-                        }
+                        previousSignature = signature
+                    } finally {
+                        frame.recycle()
                     }
-                    previousSignature = signature
-                } finally {
-                    frame.recycle()
-                }
 
-                cursorMs += currentStepMs
+                    coarseFramesSeen++
+                }
+                timing.decodeMs += SystemClock.elapsedRealtime() - coarseDecodeStart
+            } catch (e: Exception) {
+                if (frameProvider !== retrieverFrameProvider) {
+                    frameProviderFallbackReason = "MediaCodec coarse scan failed: ${e.message ?: e::class.java.simpleName}"
+                    progress("Frame provider fallback: $frameProviderFallbackReason", 10)
+                    frameProvider = retrieverFrameProvider
+                    coarseFramesSeen = 0
+                    val retryDecodeStart = SystemClock.elapsedRealtime()
+                    frameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
+                        if (SystemClock.elapsedRealtime() - scanStartRealtime >= scanConfig.totalScanBudgetMs) {
+                            progress("Scan budget reached. Finalizing from collected candidates", 43)
+                            stopCoarseScan = true
+                            return@forEachFrameInWindow
+                        }
+                        if (!coroutineContext.isActive || stopCoarseScan) return@forEachFrameInWindow
+                        val cursorMs = decoded.timeMs.coerceIn(0L, durationMs)
+                        val percent = ((cursorMs.toFloat() / durationMs.toFloat()) * 100f).toInt().coerceIn(0, 100)
+                        val elapsedSeconds = String.format(Locale.US, "%.1f", cursorMs / 1000f)
+                        val totalSeconds = String.format(Locale.US, "%.1f", durationMs / 1000f)
+                        progress(
+                            "Scanning timeline ${elapsedSeconds}s / ${totalSeconds}s (${percent}%, step ${currentStepMs}ms)",
+                            percent
+                        )
+                        val frame = decoded.bitmap
+                        try {
+                            visualSamples++
+                            val signature = computeRoiSignature(frame, scanWindow, sourceRotationDegrees)
+                            val signatureDelta = previousSignature?.let { roiDifference(it, signature) } ?: 0f
+                            val rawVisualChange = signatureDelta >= scanConfig.changeThreshold
+                            if (rawVisualChange) {
+                                consecutiveChangedSamples += 1
+                                if (pendingChangeStartMs == null) {
+                                    pendingChangeStartMs = cursorMs
+                                }
+                                pendingPeakScore = max(pendingPeakScore, signatureDelta)
+                            } else {
+                                consecutiveChangedSamples = 0
+                                pendingChangeStartMs = null
+                                pendingPeakScore = 0f
+                            }
+                            val visualChangeDetected = rawVisualChange && consecutiveChangedSamples >= 2
+                            val periodicProbe = msSinceLastCandidate >= effectivePeriodicProbeMs
+                            val shouldProbe = previousSignature == null || visualChangeDetected || periodicProbe
+                            val probeSeedMs = if (visualChangeDetected) pendingChangeStartMs ?: cursorMs else cursorMs
+                            val probePeakScore = if (visualChangeDetected && pendingPeakScore > 0f) pendingPeakScore else signatureDelta
+                            if (shouldProbe) {
+                                val padStart = max(0L, probeSeedMs - scanConfig.candidatePadMs)
+                                val padEnd = min(durationMs, probeSeedMs + scanConfig.candidatePadMs)
+                                val seedMs = probeSeedMs
+                                val reason = when {
+                                    previousSignature == null -> CandidateReason.InitialProbe
+                                    visualChangeDetected -> CandidateReason.VisualChange
+                                    else -> CandidateReason.PeriodicProbe
+                                }
+                                if (candidateWindows.isNotEmpty()) {
+                                    val last = candidateWindows.last()
+                                    if (padStart <= last.endMs + scanConfig.candidateMergeGapMs) {
+                                        candidateWindows[candidateWindows.lastIndex] = last.copy(
+                                            startMs = min(last.startMs, padStart),
+                                            endMs = max(last.endMs, padEnd),
+                                            seedMs = (last.seedMs + seedMs) / 2L,
+                                            peakScore = max(last.peakScore, probePeakScore),
+                                            reason = if (last.reason == CandidateReason.VisualChange || reason == CandidateReason.VisualChange) CandidateReason.VisualChange else last.reason,
+                                            sampleCount = last.sampleCount + 1
+                                        )
+                                    } else {
+                                        candidateWindows.add(TransitionCandidateWindow(padStart, padEnd, seedMs, probePeakScore, reason, 1))
+                                    }
+                                } else {
+                                    candidateWindows.add(TransitionCandidateWindow(padStart, padEnd, seedMs, probePeakScore, reason, 1))
+                                }
+                                msSinceLastCandidate = 0L
+                                pendingChangeStartMs = null
+                                pendingPeakScore = 0f
+                                consecutiveChangedSamples = 0
+                                stableSamples = 0
+                            } else {
+                                msSinceLastCandidate += adaptiveStepMs
+                                stableSamples++
+                            }
+                            previousSignature = signature
+                        } finally {
+                            frame.recycle()
+                        }
+                        coarseFramesSeen++
+                    }
+                    timing.decodeMs += SystemClock.elapsedRealtime() - retryDecodeStart
+                } else {
+                    throw e
+                }
             }
 
             if (candidateWindows.isEmpty()) {
@@ -2101,7 +2181,7 @@ class VideoCompilationEngine(private val context: Context) {
                     break
                 }
                 if (!coroutineContext.isActive) {
-                    return@withContext ScanFindResult(emptyList(), timing, emptyList(), ScanMetrics.empty())
+                    return@withContext ScanFindResult(emptyList(), timing, emptyList(), ScanMetrics.empty(), durationMs)
                 }
                 val candidateStart = max(0L, candidate.startMs)
                 val candidateEnd = min(durationMs, candidate.endMs)
@@ -2264,9 +2344,10 @@ class VideoCompilationEngine(private val context: Context) {
 
             val artifactPadMs = transitionStyle.edgePaddingMs
             val rawSegments = uniqueTransitions.map { t ->
+                val requested = buildRequestedSegment(t, durationMs)
                 SegmentWindow(
-                    startMs = max(0L, t - 10_000L - artifactPadMs),
-                    endMs = min(durationMs, t + 30_000L + artifactPadMs)
+                    startMs = max(0L, requested.startMs - artifactPadMs),
+                    endMs = min(durationMs, requested.endMs + artifactPadMs)
                 )
             }.sortedBy { it.startMs }
             val mergedTiming = measureTimeMillis {
@@ -2290,6 +2371,8 @@ class VideoCompilationEngine(private val context: Context) {
                 sourceUri = sourceUri.toString(),
                 profileLabel = scanProfileLabel,
                 scannerMode = scanMode,
+                frameProvider = frameProvider::class.simpleName ?: "FrameProvider",
+                frameProviderFallbackReason = frameProviderFallbackReason,
                 scanWindow = scanWindow,
                 frameStepMs = frameStepMs,
                 checkpointIntervalMs = frameStepMs,
@@ -2298,6 +2381,7 @@ class VideoCompilationEngine(private val context: Context) {
                 wallClockScanMs = wallClockMs,
                 scanSpeedMultiple = throughput,
                 candidateWindows = candidateWindows.size,
+                coarseSampleCount = coarseFramesSeen,
                 candidatesFound = candidateWindows.size,
                 mode = scanMode.name,
                 durationMs = durationMs,
@@ -2308,7 +2392,7 @@ class VideoCompilationEngine(private val context: Context) {
                 fallbackUsed = fallbackUsed,
                 failureReason = null,
                 metrics = ScanMetrics(
-                    scannerVersion = "v0.16.0-change-map-v1",
+                    scannerVersion = "v0.17.0-streaming-change-map-v2",
                     wallClockMs = wallClockMs,
                     baselineSamplesEstimate = baselineSamplesEstimate,
                     visualSamples = visualSamples,
@@ -2323,9 +2407,9 @@ class VideoCompilationEngine(private val context: Context) {
                 candidates = candidateWindows
             )
             latestScanReportPath = writeScanReport(report)
-            return@withContext ScanFindResult(merged, timing, transitionMarks, report.metrics)
+            return@withContext ScanFindResult(merged, timing, transitionMarks, report.metrics, durationMs)
         } finally {
-            recognizer.close()
+            digitRecognizer.close()
             frameProvider.close()
             retriever.release()
         }
@@ -2602,14 +2686,22 @@ class VideoCompilationEngine(private val context: Context) {
 
         if (segments.isEmpty()) throw IllegalStateException("No segments to assemble")
         val output = File(cache, "compilation_${System.currentTimeMillis()}.${safeFormat.extension}")
-        progress("Using ${quality.label} profile with ${transitionStyle.label}", 56)
-        progress("Opening source for direct export", 57)
-        val alignedSegments = alignSegmentsToVideoSyncSamples(sourceUri, mergeWithGap(segments.sortedBy { it.startMs }, transitionStyle.mergeGapMs))
-        materializeCompilation(sourceUri, alignedSegments, safeFormat, output) { message, percent ->
-            progress(message, percent)
+        try {
+            progress("Using ${quality.label} profile with ${transitionStyle.label}", 56)
+            progress("Opening source for direct export", 57)
+            val alignedSegments = alignSegmentsToVideoSyncSamples(sourceUri, mergeWithGap(segments.sortedBy { it.startMs }, transitionStyle.mergeGapMs))
+            materializeCompilation(sourceUri, alignedSegments, safeFormat, output) { message, percent ->
+                progress(message, percent)
+            }
+            validateExportOutput(output)
+            progress("Compilation ready to save", 94)
+            return@withContext output
+        } catch (e: Exception) {
+            if (output.exists()) {
+                runCatching { output.delete() }
+            }
+            throw e
         }
-        progress("Compilation ready to save", 94)
-        return@withContext output
     }
 
     private suspend fun detectCornerNumber(frame: Bitmap, scanWindow: ScanWindow): Int? {
@@ -2624,18 +2716,46 @@ class VideoCompilationEngine(private val context: Context) {
         } ?: return null
 
         val scaled = scaleBitmapForOcr(corner)
+        val gray = grayscaleBitmap(scaled)
+        val threshold = binarizeForDigitRecognition(gray, invert = false)
+        val inverted = binarizeForDigitRecognition(gray, invert = true)
         return try {
-            val image = createSafeInputImage(scaled, "OCR")
-            val result = recognizer.process(image).await()
-            val text = result.text.replace("\n", " ")
-            val match = Regex("[-+]?[0-9]+").find(text)
-            match?.value?.toIntOrNull()
+            val attempts = listOf(
+                scaled to "raw",
+                gray to "grayscale",
+                threshold to "threshold",
+                inverted to "inverted-threshold"
+            )
+            var best = DigitRecognition(null, "", 0f, "raw")
+            for ((bitmap, branch) in attempts) {
+                val detection = digitRecognizer.recognize(bitmap, branch)
+                if (detection.value != null && detection.confidence >= best.confidence) {
+                    best = detection
+                } else if (best.value == null && detection.value != null) {
+                    best = detection
+                } else if (best.value == null && detection.confidence > best.confidence) {
+                    best = detection
+                }
+                if (best.value != null && best.confidence >= 0.95f) {
+                    break
+                }
+            }
+            best.value
         } catch (e: Exception) {
             Log.w(tag, "Skipping OCR frame after vision input failure: ${e::class.java.simpleName}: ${e.message}", e)
             null
         } finally {
             if (scaled != corner) {
                 scaled.recycle()
+            }
+            if (gray !== scaled) {
+                gray.recycle()
+            }
+            if (threshold !== gray) {
+                threshold.recycle()
+            }
+            if (inverted !== gray) {
+                inverted.recycle()
             }
             corner.recycle()
         }
@@ -2662,30 +2782,61 @@ class VideoCompilationEngine(private val context: Context) {
 
         val preprocessStartMs = System.currentTimeMillis()
         val scaled = scaleBitmapForOcr(corner)
+        val gray = grayscaleBitmap(scaled)
+        val threshold = binarizeForDigitRecognition(gray, invert = false)
+        val inverted = binarizeForDigitRecognition(gray, invert = true)
         val preprocessMs = System.currentTimeMillis() - preprocessStartMs
 
         return try {
-            val image = createSafeInputImage(scaled, "OCR")
-            val ocrStart = System.currentTimeMillis()
-            val result = recognizer.process(image).await()
-            val ocrMs = System.currentTimeMillis() - ocrStart
-            val text = result.text.replace("\n", " ")
-            val match = Regex("[-+]?[0-9]+").find(text)
-            val value = match?.value?.toIntOrNull()
-            val valueConfidence = if (value != null && text.trim().isNotEmpty() && match.value.length <= 3) {
-                0.92f
-            } else if (value != null) {
-                0.75f
-            } else {
-                0f
+            val attempts = listOf(
+                scaled to "raw",
+                gray to "grayscale",
+                threshold to "threshold",
+                inverted to "inverted-threshold"
+            )
+            var best: DigitRecognition? = null
+            var totalOcrMs = 0L
+            for ((bitmap, branch) in attempts) {
+                val branchStart = System.currentTimeMillis()
+                val detection = digitRecognizer.recognize(bitmap, branch)
+                totalOcrMs += System.currentTimeMillis() - branchStart
+                val candidateScore = when {
+                    detection.value == null -> detection.confidence * 0.35f
+                    detection.rawText.length <= 3 -> detection.confidence + 0.1f
+                    else -> detection.confidence
+                }
+                val currentBest = best
+                val bestScore = when {
+                    currentBest == null -> Float.NEGATIVE_INFINITY
+                    currentBest.value == null -> currentBest.confidence * 0.35f
+                    currentBest.rawText.length <= 3 -> currentBest.confidence + 0.1f
+                    else -> currentBest.confidence
+                }
+                if (best == null || candidateScore > bestScore) {
+                    best = detection
+                }
+                val chosen = best
+                if (chosen.value != null && chosen.confidence >= 0.95f) {
+                    break
+                }
             }
-            NumberDetectionResult(value, cropMs, preprocessMs, ocrMs, valueConfidence)
+            val chosen = best ?: DigitRecognition(null, "", 0f, "raw")
+            NumberDetectionResult(chosen.value, cropMs, preprocessMs, totalOcrMs, chosen.confidence, chosen.rawText, chosen.branch)
         } catch (e: Exception) {
             Log.w(tag, "Skipping OCR frame after vision input failure: ${e::class.java.simpleName}: ${e.message}", e)
-            NumberDetectionResult(null, cropMs, preprocessMs, 0L, 0f)
+            NumberDetectionResult(null, cropMs, preprocessMs, 0L, 0f, "", "error")
         } finally {
             if (scaled != corner) {
                 scaled.recycle()
+            }
+            if (gray !== scaled) {
+                gray.recycle()
+            }
+            if (threshold !== gray) {
+                threshold.recycle()
+            }
+            if (inverted !== gray) {
+                inverted.recycle()
             }
             corner.recycle()
             if (normalizedFrame !== frame) {
@@ -2781,13 +2932,26 @@ class VideoCompilationEngine(private val context: Context) {
             sampleEveryMs: Long,
             targetWidthPx: Int
         ): List<DecodedFrame> {
-            if (startMs > endMs) return emptyList()
             val frames = ArrayList<DecodedFrame>()
+            forEachFrameInWindow(startMs, endMs, sampleEveryMs, targetWidthPx) { frame ->
+                frames.add(frame)
+            }
+            return frames
+        }
+
+        override suspend fun forEachFrameInWindow(
+            startMs: Long,
+            endMs: Long,
+            sampleEveryMs: Long,
+            targetWidthPx: Int,
+            onFrame: suspend (DecodedFrame) -> Unit
+        ) {
+            if (startMs > endMs) return
             val safeStepMs = sampleEveryMs.coerceAtLeast(50L)
             var cursorMs = startMs.coerceAtLeast(0L)
             while (cursorMs <= endMs) {
                 try {
-                    frameAt(cursorMs, targetWidthPx)?.let { frames.add(it) }
+                    frameAt(cursorMs, targetWidthPx)?.let { onFrame(it) }
                 } catch (_: Exception) {
                     // Defensive: allow scan to continue even if a single decode frame fails.
                 }
@@ -2795,10 +2959,258 @@ class VideoCompilationEngine(private val context: Context) {
                 if (nextMs == cursorMs) break
                 cursorMs = nextMs
             }
-            return frames
         }
 
         override fun close() = Unit
+    }
+
+    private fun selectFrameProvider(
+        retrieverFrameProvider: RetrieverFrameProvider,
+        sourceUri: Uri,
+        sourceRotationDegrees: Int,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        durationMs: Long
+    ): FrameProviderSelection {
+        return try {
+            val codecProvider = MediaCodecFrameProvider(
+                sourceUri = sourceUri,
+                sourceRotationDegrees = sourceRotationDegrees,
+                sourceWidth = sourceWidth,
+                sourceHeight = sourceHeight,
+                durationMs = durationMs
+            )
+            FrameProviderSelection(codecProvider, codecProvider::class.simpleName ?: "MediaCodecFrameProvider")
+        } catch (e: Exception) {
+            Log.w(tag, "MediaCodec provider unavailable; using retriever fallback", e)
+            FrameProviderSelection(
+                provider = retrieverFrameProvider,
+                providerLabel = retrieverFrameProvider::class.simpleName ?: "RetrieverFrameProvider",
+                fallbackReason = e.message ?: e::class.java.simpleName
+            )
+        }
+    }
+
+    private inner class MediaCodecFrameProvider(
+        private val sourceUri: Uri,
+        private val sourceRotationDegrees: Int,
+        private val sourceWidth: Int,
+        private val sourceHeight: Int,
+        private val durationMs: Long
+    ) : FrameProvider {
+        override suspend fun frameAt(timeMs: Long, targetWidthPx: Int): DecodedFrame? {
+            val windowStart = max(0L, timeMs - 750L)
+            val windowEnd = timeMs + 750L
+            return decodeWindow(windowStart, windowEnd, max(125L, targetWidthPx.takeIf { it > 0 }?.let { 250L } ?: 250L), targetWidthPx)
+                .minByOrNull { kotlin.math.abs(it.timeMs - timeMs) }
+        }
+
+        override suspend fun forEachFrameInWindow(
+            startMs: Long,
+            endMs: Long,
+            sampleEveryMs: Long,
+            targetWidthPx: Int,
+            onFrame: suspend (DecodedFrame) -> Unit
+        ) {
+            if (startMs > endMs) return
+            val safeStartUs = max(0L, startMs) * 1000L
+            val safeEndUs = max(safeStartUs, endMs * 1000L)
+            val safeStepUs = max(50L, sampleEveryMs.coerceAtLeast(50L)) * 1000L
+            val extractor = MediaExtractor()
+            var codec: MediaCodec? = null
+            var imageReader: ImageReader? = null
+            try {
+                extractor.setDataSource(context, sourceUri, null)
+                val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
+                    extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+                } ?: throw IllegalStateException("No video track found")
+                val format = extractor.getTrackFormat(trackIndex)
+                val mime = format.getString(MediaFormat.KEY_MIME)
+                    ?: throw IllegalStateException("Missing video MIME")
+                val width = format.getInteger(MediaFormat.KEY_WIDTH)
+                val height = format.getInteger(MediaFormat.KEY_HEIGHT)
+                val outputWidth = if (targetWidthPx > 0) targetWidthPx else width
+                val outputHeight = if (targetWidthPx > 0 && width > 0) {
+                    max(1, (height.toFloat() * (outputWidth.toFloat() / width.toFloat())).toInt())
+                } else {
+                    height
+                }
+                extractor.selectTrack(trackIndex)
+                extractor.seekTo(safeStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                imageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 4)
+                codec = MediaCodec.createDecoderByType(mime)
+                codec.configure(format, imageReader.surface, null, 0)
+                codec.start()
+                val info = MediaCodec.BufferInfo()
+                var inputDone = false
+                var outputDone = false
+                var nextSampleUs = safeStartUs
+
+                while (!outputDone && currentCoroutineContext().isActive) {
+                    if (!inputDone) {
+                        val inputIndex = codec.dequeueInputBuffer(10_000)
+                        if (inputIndex >= 0) {
+                            val inputBuffer = codec.getInputBuffer(inputIndex)
+                            if (inputBuffer == null) {
+                                codec.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                            } else {
+                                inputBuffer.clear()
+                                val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                                if (sampleSize < 0) {
+                                    codec.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                    inputDone = true
+                                } else {
+                                    val sampleTimeUs = extractor.sampleTime
+                                    codec.queueInputBuffer(
+                                        inputIndex,
+                                        0,
+                                        sampleSize,
+                                        sampleTimeUs,
+                                        extractorSampleFlagsToBufferFlags(extractor.sampleFlags)
+                                    )
+                                    extractor.advance()
+                                    if (sampleTimeUs >= safeEndUs) {
+                                        inputDone = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    val outputIndex = codec.dequeueOutputBuffer(info, 10_000)
+                    when {
+                        outputIndex >= 0 -> {
+                            val render = info.size > 0
+                            codec.releaseOutputBuffer(outputIndex, render)
+                            if (render) {
+                                val image = imageReader.acquireLatestImage()
+                            if (image != null) {
+                                try {
+                                    val presentationUs = info.presentationTimeUs
+                                    if (presentationUs in safeStartUs..safeEndUs && presentationUs >= nextSampleUs) {
+                                        val bitmap = imageToBitmap(image)
+                                            val normalized = if (sourceRotationDegrees == 0) bitmap else normalizeBitmapForOcr(bitmap, sourceRotationDegrees)
+                                            if (normalized !== bitmap) {
+                                                bitmap.recycle()
+                                            }
+                                            val finalBitmap = if (targetWidthPx > 0 && normalized.width > targetWidthPx) {
+                                                val scaled = Bitmap.createScaledBitmap(normalized, targetWidthPx, max(1, outputHeight), true)
+                                            if (scaled !== normalized) {
+                                                normalized.recycle()
+                                            }
+                                            scaled
+                                        } else {
+                                            normalized
+                                        }
+                                            onFrame(DecodedFrame(presentationUs / 1000L, finalBitmap, presentationUs))
+                                            nextSampleUs = presentationUs + safeStepUs
+                                        } else {
+                                            val bitmap = imageToBitmap(image)
+                                            if (bitmap.width > 0 && bitmap.height > 0) {
+                                                bitmap.recycle()
+                                            }
+                                        }
+                                    } finally {
+                                        image.close()
+                                    }
+                                }
+                            }
+                            if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                                outputDone = true
+                            }
+                        }
+                        outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            // ignore
+                        }
+                        outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                            if (inputDone) {
+                                outputDone = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(tag, "MediaCodec frame provider failed; will fall back to retriever", e)
+                throw e
+            } finally {
+                runCatching { codec?.stop() }
+                runCatching { codec?.release() }
+                runCatching { imageReader?.close() }
+                runCatching { extractor.release() }
+            }
+        }
+
+        override fun close() = Unit
+    }
+
+    private fun imageToBitmap(image: Image): Bitmap {
+        val nv21 = yuv420888ToNv21(image)
+        val stream = ByteArrayOutputStream()
+        val yuv = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
+        yuv.compressToJpeg(Rect(0, 0, image.width, image.height), 100, stream)
+        val bytes = stream.toByteArray()
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?: throw IllegalStateException("Unable to decode YUV image")
+    }
+
+    private fun yuv420888ToNv21(image: Image): ByteArray {
+        val width = image.width
+        val height = image.height
+        val ySize = width * height
+        val uvSize = width * height / 2
+        val nv21 = ByteArray(ySize + uvSize)
+        val planes = image.planes
+
+        var outputOffset = 0
+        val yPlane = planes[0]
+        val yBuffer = yPlane.buffer
+        val yRowStride = yPlane.rowStride
+        val yPixelStride = yPlane.pixelStride
+        val yRow = ByteArray(yRowStride)
+        for (row in 0 until height) {
+            val rowStart = row * yRowStride
+            yBuffer.position(rowStart)
+            val length = minOf(yRowStride, yBuffer.remaining())
+            yBuffer.get(yRow, 0, length)
+            var col = 0
+            while (col < width) {
+                nv21[outputOffset++] = yRow[col * yPixelStride]
+                col++
+            }
+        }
+
+        val uPlane = planes[1]
+        val vPlane = planes[2]
+        val uBuffer = uPlane.buffer
+        val vBuffer = vPlane.buffer
+        val uRowStride = uPlane.rowStride
+        val vRowStride = vPlane.rowStride
+        val uPixelStride = uPlane.pixelStride
+        val vPixelStride = vPlane.pixelStride
+        val chromaHeight = height / 2
+        val chromaWidth = width / 2
+        val uRow = ByteArray(uRowStride)
+        val vRow = ByteArray(vRowStride)
+        for (row in 0 until chromaHeight) {
+            val uRowStart = row * uRowStride
+            val vRowStart = row * vRowStride
+            uBuffer.position(uRowStart)
+            vBuffer.position(vRowStart)
+            val uLength = minOf(uRowStride, uBuffer.remaining())
+            val vLength = minOf(vRowStride, vBuffer.remaining())
+            uBuffer.get(uRow, 0, uLength)
+            vBuffer.get(vRow, 0, vLength)
+            var col = 0
+            while (col < chromaWidth) {
+                val u = uRow[col * uPixelStride]
+                val v = vRow[col * vPixelStride]
+                nv21[outputOffset++] = v
+                nv21[outputOffset++] = u
+                col++
+            }
+        }
+        return nv21
     }
 
     private fun computeRoiSignature(frame: Bitmap, scanWindow: ScanWindow, sourceRotationDegrees: Int): RoiSignature {
@@ -2921,12 +3333,15 @@ class VideoCompilationEngine(private val context: Context) {
             put("sourceUri", report.sourceUri)
             put("profileLabel", report.profileLabel)
             put("scannerMode", report.scannerMode.name)
+            put("frameProvider", report.frameProvider)
+            put("frameProviderFallbackReason", report.frameProviderFallbackReason)
             put("checkpointIntervalMs", report.checkpointIntervalMs)
             put("scanSpeedMultiple", report.scanSpeedMultiple)
             put("experimentalDownscaleSize", report.experimentalDownscaleSize)
             put("videoDurationMs", report.videoDurationMs)
             put("wallClockScanMs", report.wallClockScanMs)
             put("candidateWindows", report.candidateWindows)
+            put("coarseSampleCount", report.coarseSampleCount)
             put("acceptedTransitions", report.acceptedTransitions)
             put("rejectedCandidates", report.rejectedCandidates)
             put("fallbackUsed", report.fallbackUsed)
@@ -3164,6 +3579,31 @@ class VideoCompilationEngine(private val context: Context) {
         extractor.release()
     }
 
+    private fun validateExportOutput(output: File) {
+        if (!output.exists() || output.length() <= 0L) {
+            throw IllegalStateException("Exported compilation was not written successfully")
+        }
+        val retriever = MediaMetadataRetriever()
+        val extractor = MediaExtractor()
+        try {
+            retriever.setDataSource(output.absolutePath)
+            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            if (durationMs <= 0L) {
+                throw IllegalStateException("Exported compilation has no readable duration")
+            }
+            extractor.setDataSource(output.absolutePath)
+            val hasVideo = (0 until extractor.trackCount).any { trackIndex ->
+                extractor.getTrackFormat(trackIndex).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+            }
+            if (!hasVideo) {
+                throw IllegalStateException("Exported compilation has no video track")
+            }
+        } finally {
+            runCatching { retriever.release() }
+            runCatching { extractor.release() }
+        }
+    }
+
     private fun alignSegmentsToVideoSyncSamples(
         sourceUri: Uri,
         segments: List<SegmentWindow>
@@ -3199,25 +3639,11 @@ class VideoCompilationEngine(private val context: Context) {
     }
 
     private fun mergeOverlapping(input: List<SegmentWindow>): List<SegmentWindow> {
-        return mergeWithGap(input, 0L)
+        return mergeSegmentWindows(input, 0L)
     }
 
     private fun mergeWithGap(input: List<SegmentWindow>, maxGapMs: Long): List<SegmentWindow> {
-        if (input.isEmpty()) return emptyList()
-        val merged = ArrayList<SegmentWindow>()
-        val sorted = input.sortedBy { it.startMs }
-        var current = sorted[0]
-        for (i in 1 until input.size) {
-            val next = sorted[i]
-            if (next.startMs <= current.endMs + maxGapMs) {
-                current = SegmentWindow(current.startMs, max(current.endMs, next.endMs))
-            } else {
-                merged.add(current)
-                current = next
-            }
-        }
-        merged.add(current)
-        return merged
+        return mergeSegmentWindows(input, maxGapMs)
     }
 
     private fun formatDurationMs(totalMs: Long): String {
@@ -3255,19 +3681,23 @@ data class ScanFindResult(
     val segments: List<SegmentWindow>,
     val timing: ScanTimingSummary,
     val transitionMarks: List<TransitionMark>,
-    val metrics: ScanMetrics
+    val metrics: ScanMetrics,
+    val videoDurationMs: Long
 )
 
 private data class ScanFindReport(
     val sourceUri: String,
     val profileLabel: String,
     val scannerMode: ScanMode,
+    val frameProvider: String,
+    val frameProviderFallbackReason: String?,
     val checkpointIntervalMs: Long,
     val scanSpeedMultiple: Float,
     val experimentalDownscaleSize: Int,
     val videoDurationMs: Long,
     val wallClockScanMs: Long,
     val candidateWindows: Int,
+    val coarseSampleCount: Int,
     val scanWindow: ScanWindow,
     val frameStepMs: Long,
     val candidatesFound: Int,
@@ -3289,7 +3719,9 @@ private data class NumberDetectionResult(
     val cropMs: Long,
     val preprocessMs: Long,
     val ocrMs: Long,
-    val confidence: Float = 0f
+    val confidence: Float = 0f,
+    val rawText: String = "",
+    val branch: String = "raw"
 )
 
 private data class TransitionCandidateWindow(
@@ -3323,17 +3755,31 @@ private data class TimedDetection(
 
 private interface FrameProvider : AutoCloseable {
     suspend fun frameAt(timeMs: Long, targetWidthPx: Int = 0): DecodedFrame?
+    suspend fun forEachFrameInWindow(
+        startMs: Long,
+        endMs: Long,
+        sampleEveryMs: Long,
+        targetWidthPx: Int = 0,
+        onFrame: suspend (DecodedFrame) -> Unit
+    )
     suspend fun decodeWindow(
         startMs: Long,
         endMs: Long,
         sampleEveryMs: Long,
         targetWidthPx: Int = 0
-    ): List<DecodedFrame>
+    ): List<DecodedFrame> {
+        val frames = ArrayList<DecodedFrame>()
+        forEachFrameInWindow(startMs, endMs, sampleEveryMs, targetWidthPx) { frame ->
+            frames.add(frame)
+        }
+        return frames
+    }
 }
 
 private data class DecodedFrame(
     val timeMs: Long,
-    val bitmap: Bitmap
+    val bitmap: Bitmap,
+    val sourceTimeUs: Long = timeMs * 1000L
 )
 
 data class ScanMetrics(
@@ -3350,7 +3796,7 @@ data class ScanMetrics(
 ) {
     companion object {
         fun empty(): ScanMetrics = ScanMetrics(
-            scannerVersion = "v0.16.0-change-map-v1",
+            scannerVersion = "v0.17.0-streaming-change-map-v2",
             wallClockMs = 0L,
             baselineSamplesEstimate = 0,
             visualSamples = 0,
@@ -3406,6 +3852,12 @@ private data class UpdateInfo(
     val releaseUrl: String,
     val downloadUrl: String,
     val releaseNotes: String
+)
+
+private data class FrameProviderSelection(
+    val provider: FrameProvider,
+    val providerLabel: String,
+    val fallbackReason: String? = null
 )
 
 data class SegmentWindow(val startMs: Long, val endMs: Long)
