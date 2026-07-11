@@ -60,17 +60,53 @@ fun installCrashRecorder(context: Context) {
 }
 
 fun writeCrashReport(context: Context, threadName: String, throwable: Throwable) {
+    writeExceptionReport(context, "crash", threadName, throwable)
+}
+
+fun recordHandledWorkerFailure(context: Context, workerName: String, message: String, throwable: Throwable) {
     val appContext = context.applicationContext
-    val crashFile = File(appContext.filesDir, CRASH_LOG_FILE)
-    val traceTail = readTail(File(appContext.filesDir, TRACE_LOG_FILE), TRACE_TAIL_BYTES)
+    AppLog.e(appContext, workerName, message, throwable)
+    runCatching {
+        writeExceptionReport(appContext, "worker-failure", Thread.currentThread().name, throwable)
+    }.onFailure { loggingFailure ->
+        AppLog.e(appContext, "CrashLogStore", "Unable to persist handled worker failure", loggingFailure)
+    }
+}
+
+private fun writeExceptionReport(context: Context, kind: String, threadName: String, throwable: Throwable) {
+    val appContext = context.applicationContext
+    persistExceptionReport(
+        crashFile = File(appContext.filesDir, CRASH_LOG_FILE),
+        traceFile = File(appContext.filesDir, TRACE_LOG_FILE),
+        kind = kind,
+        threadName = threadName,
+        versionName = BuildConfig.VERSION_NAME,
+        versionCode = BuildConfig.VERSION_CODE,
+        throwable = throwable,
+        reportTimestamp = timestamp()
+    )
+}
+
+internal fun persistExceptionReport(
+    crashFile: File,
+    traceFile: File,
+    kind: String,
+    threadName: String,
+    versionName: String,
+    versionCode: Int,
+    throwable: Throwable,
+    reportTimestamp: String
+) {
+    val traceTail = readTail(traceFile, TRACE_TAIL_BYTES)
     val writer = StringWriter()
     throwable.printStackTrace(PrintWriter(writer))
+    crashFile.parentFile?.mkdirs()
     crashFile.writeText(
         buildString {
-            appendLine("kind=crash")
-            appendLine("timestamp=${timestamp()}")
+            appendLine("kind=$kind")
+            appendLine("timestamp=$reportTimestamp")
             appendLine("thread=$threadName")
-            appendLine("version=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            appendLine("version=$versionName ($versionCode)")
             appendLine("message=${throwable.message ?: ""}")
             if (traceTail.isNotBlank()) {
                 appendLine()

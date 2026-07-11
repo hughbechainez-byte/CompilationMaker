@@ -5,13 +5,12 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
+import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import kotlinx.coroutines.CancellationException
@@ -27,6 +26,10 @@ class CompilationWorker(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        promoteToForeground("starting", "Preparing compilation", 0)?.let {
+            return@withContext it
+        }
+
         val sourceUriRaw = inputData.getString(KEY_SOURCE_URI)
         val qualityOrdinal = inputData.getInt(KEY_QUALITY_ORDINAL, ExportFormat.Mp4.ordinal)
         val formatOrdinal = inputData.getInt(KEY_FORMAT_ORDINAL, ExportFormat.Mp4.ordinal)
@@ -41,7 +44,6 @@ class CompilationWorker(
             return@withContext Result.failure(workDataOf(KEY_ERROR_MESSAGE to "Missing source video"))
         }
 
-        setForegroundCompat("starting", "Preparing compilation", 0)
         setProgressCompat("starting", "Preparing compilation", 0)
 
         val sourceUri = runCatching { Uri.parse(sourceUriRaw) }.getOrNull()
@@ -143,9 +145,9 @@ class CompilationWorker(
             setForegroundCompat("completed", "Compilation complete", 100, fallbackUsed)
             Result.success(result)
         } catch (cancelled: CancellationException) {
-            Result.failure(workDataOf(KEY_ERROR_MESSAGE to (cancelled.message ?: "Cancelled"), KEY_FALLBACK_USED to fallbackUsed))
+            propagateWorkerCancellation(cancelled)
         } catch (e: Exception) {
-            AppLog.e(applicationContext, "CompilationWorker", "Compilation failed", e)
+            recordHandledWorkerFailure(applicationContext, "CompilationWorker", "Compilation failed", e)
             Result.failure(workDataOf(KEY_ERROR_MESSAGE to (e.message ?: "Compilation failed"), KEY_FALLBACK_USED to fallbackUsed))
         }
     }
@@ -250,9 +252,8 @@ class CompilationWorker(
         fallbackUsed: Boolean = false
     ) {
         publishProgressData(phase, message, percent, fallbackUsed)
-        if (!isNotificationEnabled(applicationContext)) return
         val notification = compileNotification(phase, message, percent)
-        setForegroundAsync(ForegroundInfo(NOTIFICATION_ID, notification))
+        setForegroundAsync(createForegroundInfo(notification))
     }
 
     private fun compileNotification(phase: String, message: String, percent: Int): android.app.Notification {
@@ -265,7 +266,8 @@ class CompilationWorker(
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        return NotificationCompat.Builder(applicationContext, NOTIFICATION_CHANNEL_ID)
+        val cancelIntent = WorkManager.getInstance(applicationContext).createCancelPendingIntent(id)
+        return NotificationCompat.Builder(applicationContext, COMPILATION_NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setContentTitle("Compilation: $phase")
             .setContentText(message)
@@ -274,31 +276,54 @@ class CompilationWorker(
             .setOnlyAlertOnce(true)
             .setOngoing(true)
             .setProgress(100, percent.coerceIn(0, 100), false)
+            .addAction(android.R.drawable.ic_delete, "Cancel", cancelIntent)
             .build()
+    }
+
+    private fun createForegroundInfo(notification: android.app.Notification): ForegroundInfo =
+        createCompilationForegroundInfo(notification)
+
+    private fun promoteToForeground(phase: String, message: String, percent: Int): Result? {
+        return try {
+            val notification = compileNotification(phase, message, percent)
+            val promoted = awaitForegroundPromotion(
+                setForegroundAsync(createForegroundInfo(notification))
+            ) { failure ->
+                recordHandledWorkerFailure(
+                    applicationContext,
+                    "CompilationWorker",
+                    "Foreground promotion failed",
+                    failure
+                )
+            }
+            if (promoted) null else foregroundPromotionFailureResult()
+        } catch (cancelled: CancellationException) {
+            propagateWorkerCancellation(cancelled)
+        } catch (failure: RuntimeException) {
+            recordHandledWorkerFailure(
+                applicationContext,
+                "CompilationWorker",
+                "Foreground promotion failed",
+                failure
+            )
+            foregroundPromotionFailureResult()
+        }
     }
 
     private fun ensureNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val existing = manager.getNotificationChannel(NOTIFICATION_CHANNEL_ID)
+        val existing = manager.getNotificationChannel(COMPILATION_NOTIFICATION_CHANNEL_ID)
         if (existing != null) return
         manager.createNotificationChannel(
             NotificationChannel(
-                NOTIFICATION_CHANNEL_ID,
+                COMPILATION_NOTIFICATION_CHANNEL_ID,
                 "Compilation progress",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 setShowBadge(false)
             }
         )
-    }
-
-    private fun isNotificationEnabled(context: Context): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
     }
 
     private data class ScanTaskResult(
@@ -328,7 +353,5 @@ class CompilationWorker(
         const val KEY_NO_TRANSITIONS_DETECTED = "noTransitionsDetected"
         const val KEY_ERROR_MESSAGE = "errorMessage"
 
-        private const val NOTIFICATION_CHANNEL_ID = "compilation_progress"
-        private const val NOTIFICATION_ID = 6106
     }
 }

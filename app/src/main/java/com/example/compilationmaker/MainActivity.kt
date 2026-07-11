@@ -235,14 +235,14 @@ class MainActivity : AppCompatActivity() {
     private val experimentalDownscaleOptions = intArrayOf(16, 24, 32, 40)
     private val defaultScanWindow = ScanWindow(0.0f, 0.8f, 0.10f, 0.30f)
     private val compilationWorkName = "compilation_scan_export"
-    private val progressNotificationChannelId = "compilation_progress"
-    private val progressNotificationId = 6106
+    private val progressNotificationChannelId = COMPILATION_NOTIFICATION_CHANNEL_ID
+    private val progressNotificationId = ACTIVITY_PROGRESS_NOTIFICATION_ID
     private val updateNotificationChannelId = "compilation_updates"
     private val updateNotificationId = 6110
     private val workManager by lazy { WorkManager.getInstance(this) }
     private var compilationWorkId: UUID? = null
-    private var activeWorkInfoLiveData: LiveData<WorkInfo>? = null
-    private var activeWorkObserver: Observer<WorkInfo>? = null
+    private var activeWorkInfoLiveData: LiveData<WorkInfo?>? = null
+    private var activeWorkObserver: Observer<WorkInfo?>? = null
     private val compileWorkPrefs by lazy { getSharedPreferences("compilation_jobs", MODE_PRIVATE) }
     private val updateManifestRawEndpoint =
         "https://raw.githubusercontent.com/hughbechainez-byte/CompilationMaker/master/app-update.json"
@@ -688,6 +688,7 @@ class MainActivity : AppCompatActivity() {
             .build()
 
         compilationWorkId = request.id
+        clearProgressNotification()
         compileWorkPrefs.edit().putString("active_work_id", request.id.toString()).apply()
         observeCompilationWork(request.id)
         workManager.enqueueUniqueWork(compilationWorkName, ExistingWorkPolicy.KEEP, request)
@@ -791,6 +792,8 @@ class MainActivity : AppCompatActivity() {
                 compileWorkPrefs.edit().remove("active_work_id").apply()
                 return@launch
             }
+            compilationWorkId = parsed
+            clearProgressNotification()
             runOnUiThread {
                 emitProgress("Resuming tracked background compilation", 0)
             }
@@ -1175,6 +1178,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateProgressNotification(message: String, percent: Int, ongoing: Boolean) {
+        if (compilationWorkId != null) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
