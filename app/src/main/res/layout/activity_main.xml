@@ -157,37 +157,45 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="Quality" />
+            android:text="Quality"
+            android:visibility="gone" />
 
         <Spinner
             android:id="@+id/qualityPicker"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
+            android:layout_height="wrap_content"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/formatLabel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="Output format" />
+            android:text="Output format"
+            android:visibility="gone" />
 
         <Spinner
             android:id="@+id/formatPicker"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
+            android:layout_height="wrap_content"
+            android:visibility="gone" />
 
         <TextView
+            android:id="@+id/scanIntervalLabel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="Scan interval" />
+            android:text="Scan interval"
+            android:visibility="gone" />
 
         <Spinner
             android:id="@+id/scanSpeedPicker"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
+            android:layout_height="wrap_content"
+            android:visibility="gone" />
 
         <TextView
+            android:id="@+id/experimentalModeLabel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
@@ -198,18 +206,22 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Experimental Fast ROI Scan"
+            android:visibility="gone"
             android:checked="false" />
 
         <TextView
+            android:id="@+id/experimentalDownscaleLabel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="Experimental downscale size" />
+            android:text="Experimental downscale size"
+            android:visibility="gone" />
 
         <Spinner
             android:id="@+id/experimentalDownscalePicker"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
+            android:layout_height="wrap_content"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/experimentalModeWarning"

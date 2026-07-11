@@ -218,9 +218,9 @@ class MainActivity : AppCompatActivity() {
     private val formatOptions = arrayOf(ExportFormat.Mp4, ExportFormat.Webm, ExportFormat.Mov)
     private val transitionStyleOptions = arrayOf(TransitionStyle.Instant, TransitionStyle.Gradual)
     private val checkpointProfiles = arrayOf(
-        ScanProfile("1 minute checkpoint", 60_000L, ScanMode.StableCheckpoint),
-        ScanProfile("3 minute checkpoint", 180_000L, ScanMode.StableCheckpoint),
-        ScanProfile("5 minute checkpoint", 300_000L, ScanMode.StableCheckpoint)
+        ScanProfile("Fast change-map (500ms)", 500L, ScanMode.StableCheckpoint),
+        ScanProfile("Accurate change-map (250ms)", 250L, ScanMode.StableCheckpoint),
+        ScanProfile("Dense (125ms) [debug]", 125L, ScanMode.Experimental)
     )
     private val experimentalDownscaleOptions = intArrayOf(16, 24, 32, 40)
     private val defaultScanWindow = ScanWindow(0.0f, 0.8f, 0.10f, 0.30f)
@@ -545,7 +545,7 @@ class MainActivity : AppCompatActivity() {
             android.R.layout.simple_spinner_item,
             checkpointProfiles.map { it.label },
         )
-        scanSpeedSpinner.setSelection(1, false)
+        scanSpeedSpinner.setSelection(0, false)
         experimentalDownscaleSpinner.adapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_item,
@@ -626,6 +626,7 @@ class MainActivity : AppCompatActivity() {
 
         val scanProfile = selectedCheckpointProfile()
         val experimentalMode = experimentalModeSwitch.isChecked
+        val requestedScanMode = if (experimentalMode) ScanMode.Experimental else scanProfile.mode
         if (experimentalMode && !readScanWindow().let { it.widthPercent > 0.001f && it.heightPercent > 0.001f }) {
             withContext(Dispatchers.Main) {
                 emitProgress("Invalid ROI. Capture a frame and choose a valid ROI before running experimental scan.", 100)
@@ -639,7 +640,7 @@ class MainActivity : AppCompatActivity() {
             isBusy = true
             clearStatusFeed("Queued")
             emitProgress(
-                "Starting ${if (experimentalMode) "Experimental Fast ROI Scan" else "Stable Checkpoint Scan"} " +
+                "Starting ${if (requestedScanMode == ScanMode.Experimental) "Experimental" else "Fast"} change-map scan " +
                     "(${scanProfile.label}) and preparing output...",
                 0
             )
@@ -653,7 +654,7 @@ class MainActivity : AppCompatActivity() {
                 put("widthPercent", selectedScanWindow.widthPercent)
                 put("heightPercent", selectedScanWindow.heightPercent)
             }.toString())
-            .putInt(CompilationWorker.KEY_SCAN_MODE, if (experimentalMode) ScanMode.Experimental.ordinal else ScanMode.StableCheckpoint.ordinal)
+            .putInt(CompilationWorker.KEY_SCAN_MODE, requestedScanMode.ordinal)
             .putLong(CompilationWorker.KEY_CHECKPOINT_INTERVAL_MS, scanProfile.frameStepMs)
             .putInt(CompilationWorker.KEY_EXPERIMENTAL_DOWNSCALE, selectedExperimentalDownscaleSize())
             .putInt(CompilationWorker.KEY_QUALITY_ORDINAL, quality.ordinal)
