@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.2",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.2",
+  "version": "v0.17.3",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.3",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.2/CompilationMaker-v0.17.2.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.3/CompilationMaker-v0.17.3.apk"
   },
-  "notes": "Release 0.17.2: persistent rolling app trace, crash snapshot capture, and log viewer copy/clear actions.",
+  "notes": "Release 0.17.3: fixes the Android 15 foreground-service startup crash and restores visible 3-minute, 1-minute, and 5-minute checkpoint scan options while keeping Fast change-map (500ms) as the default.",
   "updates": [
+    {
+      "version": "v0.17.3",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.3",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.3/CompilationMaker-v0.17.3.apk",
+      "notes": "Android 15 typed foreground-service fix plus restored visible 3-minute, 1-minute, and 5-minute checkpoint scan options; Fast change-map (500ms) remains the default"
+    },
     {
       "version": "v0.17.2",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.2",
