@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.0",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.0",
+  "version": "v0.17.1",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.1",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.0/CompilationMaker-v0.17.0.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.1/CompilationMaker-v0.17.1.apk"
   },
-  "notes": "Release 0.17.0: streaming MediaCodec coarse scan, explicit no-transition failure, multi-branch OCR preprocessing, export validation, and duration correctness fixes.",
+  "notes": "Release 0.17.1: crash log viewer button, persisted last-crash capture, and copy/clear crash report actions.",
   "updates": [
+    {
+      "version": "v0.17.1",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.1",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.1/CompilationMaker-v0.17.1.apk",
+      "notes": "crash log viewer button, persisted last-crash capture, and copy/clear crash report actions"
+    },
     {
       "version": "v0.17.0",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.0",
