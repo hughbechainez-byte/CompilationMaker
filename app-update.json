@@ -4,5 +4,31 @@
   "apk": {
     "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.4/CompilationMaker-v0.16.4.apk"
   },
-  "notes": "Release 0.16.4: finalize change-map scan optimization (500ms fast mode default), two-hit number confirmation, high-confidence OCR fallback, and richer ROI feature scoring for faster and more accurate number-change detection."
+  "notes": "Release 0.16.4: finalize change-map scan optimization (500ms fast mode default), two-hit number confirmation, high-confidence OCR fallback, and richer ROI feature scoring for faster and more accurate number-change detection.",
+  "updates": [
+    {
+      "version": "v0.16.4",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.4",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.4/CompilationMaker-v0.16.4.apk",
+      "notes": "finalize change-map scan optimization (500ms fast mode default), two-hit number confirmation, high-confidence OCR fallback, and richer ROI feature scoring"
+    },
+    {
+      "version": "v0.16.3",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.3",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.3/CompilationMaker-v0.16.3.apk",
+      "notes": "strengthen OCR validation and ROI feature vector"
+    },
+    {
+      "version": "v0.16.2",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.2",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.2/CompilationMaker-v0.16.2.apk",
+      "notes": "add change-map config tuning and visual hysteresis"
+    },
+    {
+      "version": "v0.16.1",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.1",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.1/CompilationMaker-v0.16.1.apk",
+      "notes": "simplify scan controls and default profile"
+    }
+  ]
 }

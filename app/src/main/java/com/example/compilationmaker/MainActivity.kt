@@ -240,6 +240,8 @@ class MainActivity : AppCompatActivity() {
         "https://api.github.com/repos/hughbechainez-byte/CompilationMaker/contents/app-update.json"
     private val fallbackReleaseEndpoint =
         "https://api.github.com/repos/hughbechainez-byte/CompilationMaker/releases/latest"
+    private val fallbackReleasesEndpoint =
+        "https://api.github.com/repos/hughbechainez-byte/CompilationMaker/releases?per_page=20"
     private val updateCooldownMs = 12L * 60L * 60L * 1000L
     private val updatePrefs by lazy { getSharedPreferences("update_prefs", MODE_PRIVATE) }
 
@@ -1403,8 +1405,8 @@ class MainActivity : AppCompatActivity() {
 
             updatePrefs.edit().putLong("last_update_check_ms", now).apply()
 
-            val info = withContext(Dispatchers.IO) { fetchUpdateInfo() }
-            if (info == null) {
+            val updates = withContext(Dispatchers.IO) { fetchAvailableUpdates() }
+            if (updates.isEmpty()) {
                 if (force) {
                     runOnUiThread {
                         emitProgress("No update information found. Check connection and manifest URL.", 100)
@@ -1412,30 +1414,70 @@ class MainActivity : AppCompatActivity() {
                 }
                 return@launch
             }
-            val latest = info.versionName
+
+            if (force) {
+                showUpdateCatalogDialog(updates)
+                return@launch
+            }
+
+            val latest = updates.maxByOrNull { updateVersionCode(it.versionName) } ?: return@launch
             val current = BuildConfig.VERSION_NAME.ifBlank { "0.0.0" }
-            if (!isRemoteVersionNewer(latest, current)) {
-                if (force) {
-                    runOnUiThread {
-                        emitProgress("You're on the latest version (${current}).", 100)
-                    }
-                }
+            if (!isRemoteVersionNewer(latest.versionName, current)) {
                 return@launch
             }
 
             val notifiedVersion = updatePrefs.getString("notified_version", "")
-            if (!force && notifiedVersion == latest) {
+            if (notifiedVersion == latest.versionName) {
                 return@launch
             }
-            updatePrefs.edit().putString("notified_version", latest).apply()
-            if (force) {
-                showUpdateAvailableDialog(info)
-            } else {
-                notifyUserOfUpdate(info)
-                runOnUiThread {
-                    emitProgress("Update ${info.versionName} available. Tap Check for updates to install.", 100)
-                }
+            updatePrefs.edit().putString("notified_version", latest.versionName).apply()
+            notifyUserOfUpdate(latest)
+            runOnUiThread {
+                emitProgress("Update ${latest.versionName} available. Tap Check for updates to install.", 100)
             }
+        }
+    }
+
+    private fun showUpdateCatalogDialog(updates: List<UpdateInfo>) {
+        val current = BuildConfig.VERSION_NAME.ifBlank { "0.0.0" }
+        val downloadable = updates
+            .filter { it.downloadUrl.isNotBlank() && it.versionName.isNotBlank() }
+            .map { info ->
+                val suffix = if (isRemoteVersionNewer(info.versionName, current)) " (newer)" else ""
+                info to "${info.versionName}$suffix"
+            }
+
+        if (downloadable.isEmpty()) {
+            runOnUiThread {
+                emitProgress("No downloadable updates found in release feed.", 100)
+            }
+            return
+        }
+
+        val candidates = downloadable.map { it.first }
+        runOnUiThread {
+            AlertDialog.Builder(this)
+                .setTitle("Available updates")
+                .setItems(downloadable.map { it.second }.toTypedArray()) { _, index ->
+                    val info = candidates[index]
+                    AlertDialog.Builder(this)
+                        .setTitle("Install ${info.versionName}")
+                        .setMessage(
+                            if (info.releaseNotes.isBlank()) {
+                                "Install ${info.versionName}?"
+                            } else {
+                                info.releaseNotes
+                            }
+                        )
+                        .setPositiveButton("Install") { _, _ ->
+                            downloadAndInstallUpdate(info)
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+                .setPositiveButton("Cancel", null)
+                .show()
+            emitProgress("Available updates: ${candidates.size}", 100)
         }
     }
 
@@ -1614,56 +1656,97 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun fetchUpdateInfo(): UpdateInfo? {
-        fetchManifestUpdateInfo()?.let { return it }
+    private fun fetchAvailableUpdates(): List<UpdateInfo> {
+        val manifestUpdates = fetchManifestUpdateList()
+        if (manifestUpdates.isNotEmpty()) {
+            return manifestUpdates
+        }
         return try {
-            val response = fetchUrlText(fallbackReleaseEndpoint) ?: return null
+            val response = fetchUrlText(fallbackReleasesEndpoint) ?: return emptyList()
+            val releases = JSONArray(response)
+            (0 until releases.length()).mapNotNull { i ->
+                parseReleaseToUpdateInfo(releases.optJSONObject(i))
+            }
+        } catch (_: Exception) {
+            fetchUpdateFromFallbackRelease()
+        }
+    }
+
+    private fun fetchUpdateFromFallbackRelease(): List<UpdateInfo> {
+        return try {
+            val response = fetchUrlText(fallbackReleaseEndpoint) ?: return emptyList()
             val json = JSONObject(response)
-            val version = json.optString("tag_name", "")
-                .ifBlank { json.optString("name", "") }
-                .ifBlank { "0.0.0" }
-            val releaseUrl = json.optString("html_url", "")
-            val assets = json.optJSONArray("assets")
-            val download = selectReleaseApkUrl(assets)
-            UpdateInfo(
-                version,
-                releaseUrl,
-                download,
-                "Release from GitHub API"
-            )
+            parseReleaseToUpdateInfo(json)?.let { listOf(it) } ?: emptyList()
         } catch (_: Exception) {
             runOnUiThread {
                 emitProgress("Update check failed. Verify manifest and/or release endpoint settings.", 100)
             }
-            null
+            emptyList()
         }
     }
 
-    private fun fetchManifestUpdateInfo(): UpdateInfo? {
+    private fun fetchManifestUpdateList(): List<UpdateInfo> {
         for (endpoint in listOf(updateManifestRawEndpoint, updateManifestBlobEndpoint)) {
             try {
                 val response = fetchUrlText(endpoint) ?: continue
                 val manifest = parseUpdateManifest(response) ?: continue
-                val version = manifest.optString("version", "")
-                    .ifBlank { manifest.optString("tag", "") }
-                    .ifBlank { manifest.optString("name", "") }
-                    .ifBlank { "0.0.0" }
-                val apkUrl = (manifest.optJSONObject("apk")?.optString("url", "") ?: "")
-                    .ifBlank { manifest.optString("apkUrl", "") }
-                val releaseUrl = manifest.optString("releaseUrl", "")
-                    .ifBlank { fallbackReleaseEndpoint }
-                val notes = manifest.optString("notes", "").ifBlank { manifest.optString("changelog", "") }
-                return UpdateInfo(
-                    version,
-                    releaseUrl,
-                    apkUrl,
-                    notes
-                )
+                val listed = manifest.optJSONArray("updates")
+                if (listed != null && listed.length() > 0) {
+                    val explicit = (0 until listed.length()).mapNotNull { i ->
+                        parseManifestUpdate(listed.optJSONObject(i))
+                    }
+                    if (explicit.isNotEmpty()) {
+                        return explicit
+                    }
+                }
+                parseManifestUpdate(manifest)?.let { return listOf(it) }
             } catch (_: Exception) {
                 continue
             }
         }
-        return null
+        return emptyList()
+    }
+
+    private fun parseManifestUpdate(manifestLike: JSONObject?): UpdateInfo? {
+        if (manifestLike == null) return null
+        val version = manifestLike.optString("version", "")
+            .ifBlank { manifestLike.optString("tag", "") }
+            .ifBlank { manifestLike.optString("name", "") }
+            .ifBlank { "0.0.0" }
+        val apkUrl = (manifestLike.optJSONObject("apk")?.optString("url", "") ?: "")
+            .ifBlank { manifestLike.optString("apkUrl", "") }
+        val releaseUrl = manifestLike.optString("releaseUrl", "")
+            .ifBlank { fallbackReleaseEndpoint }
+        val notes = manifestLike.optString("notes", "").ifBlank { manifestLike.optString("changelog", "") }
+        if (version.isBlank() && apkUrl.isBlank()) {
+            return null
+        }
+        return UpdateInfo(
+            version,
+            releaseUrl,
+            apkUrl,
+            notes
+        )
+    }
+
+    private fun parseReleaseToUpdateInfo(releaseJson: JSONObject?): UpdateInfo? {
+        if (releaseJson == null) return null
+        val version = releaseJson.optString("tag_name", "").ifBlank { releaseJson.optString("name", "") }
+            .ifBlank { "0.0.0" }
+        val releaseUrl = releaseJson.optString("html_url", "")
+        val assets = releaseJson.optJSONArray("assets")
+        val download = selectReleaseApkUrl(assets)
+        val notes = releaseJson.optString("body", "").trim()
+        return UpdateInfo(version, releaseUrl, download, notes)
+    }
+
+    private fun updateVersionCode(version: String): Long {
+        return version
+            .trim()
+            .trimStart('v', 'V')
+            .split(".")
+            .map { it.toLongOrNull() ?: 0L }
+            .fold(0L) { acc, value -> acc * 1000 + value }
     }
 
     private fun parseUpdateManifest(response: String): JSONObject? {
