@@ -2225,7 +2225,7 @@ class VideoCompilationEngine(private val context: Context) {
                 fallbackUsed = fallbackUsed,
                 failureReason = null,
                 metrics = ScanMetrics(
-                    scannerVersion = "v0.15.1-safe-roi-windowed",
+                    scannerVersion = "v0.16.0-change-map-v1",
                     wallClockMs = wallClockMs,
                     baselineSamplesEstimate = baselineSamplesEstimate,
                     visualSamples = visualSamples,
@@ -2262,6 +2262,8 @@ class VideoCompilationEngine(private val context: Context) {
         val safeStepMs = stepMs.coerceAtLeast(100L)
         var cursor = startMs
         var calls = 0
+        var singleHit: Int? = null
+        var singleHitMs: Long? = null
         while (cursor <= endMs) {
             val value = detectNumberAt(
                 frameProvider = frameProvider,
@@ -2272,10 +2274,18 @@ class VideoCompilationEngine(private val context: Context) {
                 timing = timing
             )
             calls++
-            if (value != null) return TimedDetection(value, calls, cursor)
+            if (value != null) {
+                if (singleHit == value) {
+                    return TimedDetection(value, calls, cursor)
+                }
+                if (singleHit == null || singleHit != value) {
+                    singleHit = value
+                    singleHitMs = cursor
+                }
+            }
             cursor += safeStepMs
         }
-        return TimedDetection(null, calls, null)
+        return TimedDetection(singleHit, calls, singleHitMs)
     }
 
     private suspend fun refineTransitionBoundary(
@@ -2441,16 +2451,44 @@ class VideoCompilationEngine(private val context: Context) {
         timing: ScanTimingSummary
     ): Int? {
         var decoded: DecodedFrame?
+        val requestedFrameWidth = ocrFrameWidthPx.coerceAtLeast(0)
         val decodeMs = measureTimeMillis {
-            decoded = frameProvider.frameAt(cursorMs, ocrFrameWidthPx.coerceAtLeast(0))
+            decoded = frameProvider.frameAt(cursorMs, requestedFrameWidth)
         }
         timing.decodeMs += decodeMs
         val localFrame = decoded?.bitmap ?: return null
-        return try {
-            val detection = detectCornerNumberWithTimings(localFrame, scanWindow, sourceRotationDegrees)
+
+        suspend fun detectWithFrameWidth(candidateFrame: Bitmap): NumberDetectionResult {
+            val detection = detectCornerNumberWithTimings(candidateFrame, scanWindow, sourceRotationDegrees)
             timing.cropMs += detection.cropMs
             timing.preprocessMs += detection.preprocessMs
             timing.ocrMs += detection.ocrMs
+            return detection
+        }
+
+        return try {
+            var detection = detectWithFrameWidth(localFrame)
+            if (
+                detection.value == null ||
+                (detection.confidence < 0.85f && requestedFrameWidth in 1..480)
+            ) {
+                val retryWidth = if (requestedFrameWidth == 0) 480 else min(requestedFrameWidth * 2, 640)
+                val fallbackDecodeMs = measureTimeMillis {
+                    decoded = frameProvider.frameAt(cursorMs, retryWidth)
+                }
+                timing.decodeMs += fallbackDecodeMs
+                val fallbackFrame = decoded?.bitmap
+                if (fallbackFrame != null && fallbackFrame !== localFrame) {
+                    val fallbackDetection = try {
+                        detectWithFrameWidth(fallbackFrame)
+                    } finally {
+                        fallbackFrame.recycle()
+                    }
+                    if (fallbackDetection.confidence >= detection.confidence) {
+                        detection = fallbackDetection
+                    }
+                }
+            }
             detection.value
         } finally {
             localFrame.recycle()
@@ -2528,14 +2566,14 @@ class VideoCompilationEngine(private val context: Context) {
         val normalizedFrame = if (sourceRotationDegrees == 0) frame else normalizeBitmapForOcr(frame, sourceRotationDegrees)
         val startedCropMs = System.currentTimeMillis()
         val corner = try {
-            if (normalizedFrame.width <= 0 || normalizedFrame.height <= 0) return NumberDetectionResult(null, 0L, 0L, 0L)
+            if (normalizedFrame.width <= 0 || normalizedFrame.height <= 0) return NumberDetectionResult(null, 0L, 0L, 0L, 0f)
             cropToWindow(normalizedFrame, scanWindow)
         } catch (e: Exception) {
             Log.w(tag, "Failed to crop scan area", e)
             if (normalizedFrame !== frame) {
                 normalizedFrame.recycle()
             }
-            return NumberDetectionResult(null, 0L, 0L, 0L)
+            return NumberDetectionResult(null, 0L, 0L, 0L, 0f)
         }
         val cropMs = System.currentTimeMillis() - startedCropMs
 
@@ -2550,10 +2588,18 @@ class VideoCompilationEngine(private val context: Context) {
             val ocrMs = System.currentTimeMillis() - ocrStart
             val text = result.text.replace("\n", " ")
             val match = Regex("[-+]?[0-9]+").find(text)
-            NumberDetectionResult(match?.value?.toIntOrNull(), cropMs, preprocessMs, ocrMs)
+            val value = match?.value?.toIntOrNull()
+            val valueConfidence = if (value != null && text.trim().isNotEmpty() && match.value.length <= 3) {
+                0.92f
+            } else if (value != null) {
+                0.75f
+            } else {
+                0f
+            }
+            NumberDetectionResult(value, cropMs, preprocessMs, ocrMs, valueConfidence)
         } catch (e: Exception) {
             Log.w(tag, "Skipping OCR frame after vision input failure: ${e::class.java.simpleName}: ${e.message}", e)
-            NumberDetectionResult(null, cropMs, preprocessMs, 0L)
+            NumberDetectionResult(null, cropMs, preprocessMs, 0L, 0f)
         } finally {
             if (scaled != corner) {
                 scaled.recycle()
@@ -2673,21 +2719,23 @@ class VideoCompilationEngine(private val context: Context) {
     }
 
     private fun computeRoiSignature(frame: Bitmap, scanWindow: ScanWindow, sourceRotationDegrees: Int): RoiSignature {
-        if (frame.width <= 0 || frame.height <= 0) return RoiSignature(IntArray(64), 0)
+        if (frame.width <= 0 || frame.height <= 0) return RoiSignature(IntArray(256), 0, 0f, 0f, 0f, 0L)
         val normalizedFrame = if (sourceRotationDegrees == 0) frame else normalizeBitmapForOcr(frame, sourceRotationDegrees)
         return try {
-            if (scanWindow.widthPercent <= 0f || scanWindow.heightPercent <= 0f) return RoiSignature(IntArray(64), 0)
+            if (scanWindow.widthPercent <= 0f || scanWindow.heightPercent <= 0f) return RoiSignature(IntArray(256), 0, 0f, 0f, 0f, 0L)
             val startX = (normalizedFrame.width * scanWindow.xPercent).roundToInt().coerceIn(0, normalizedFrame.width - 1)
             val startY = (normalizedFrame.height * scanWindow.yPercent).roundToInt().coerceIn(0, normalizedFrame.height - 1)
             val roiWidth = (normalizedFrame.width * scanWindow.widthPercent).roundToInt().coerceIn(1, normalizedFrame.width - startX)
             val roiHeight = (normalizedFrame.height * scanWindow.heightPercent).roundToInt().coerceIn(1, normalizedFrame.height - startY)
-            val grid = IntArray(64)
+            val gridSize = 16
+            val grid = IntArray(gridSize * gridSize)
             var total = 0
+            var totalLuma = 0f
             var index = 0
-            for (gy in 0 until 8) {
-                val y = (startY + (gy + 0.5f) * roiHeight / 8f).roundToInt().coerceIn(0, normalizedFrame.height - 1)
-                for (gx in 0 until 8) {
-                    val x = (startX + (gx + 0.5f) * roiWidth / 8f).roundToInt().coerceIn(0, normalizedFrame.width - 1)
+            for (gy in 0 until gridSize) {
+                val y = (startY + (gy + 0.5f) * roiHeight / gridSize.toFloat()).roundToInt().coerceIn(0, normalizedFrame.height - 1)
+                for (gx in 0 until gridSize) {
+                    val x = (startX + (gx + 0.5f) * roiWidth / gridSize.toFloat()).roundToInt().coerceIn(0, normalizedFrame.width - 1)
                     val pixel = normalizedFrame.getPixel(x, y)
                     val r = (pixel shr 16) and 0xff
                     val g = (pixel shr 8) and 0xff
@@ -2695,12 +2743,41 @@ class VideoCompilationEngine(private val context: Context) {
                     val luma = (r * 30 + g * 59 + b * 11) / 100
                     grid[index++] = luma
                     total += luma
+                    totalLuma += luma.toFloat()
                 }
             }
-            RoiSignature(grid, total / grid.size)
+            val average = total / grid.size
+            var contrast = 0f
+            var edge = 0f
+            var occupancy = 0f
+            var hash = 0L
+            val avgFloat = totalLuma / max(1, grid.size).toFloat()
+            val occupancyThreshold = avgFloat + 15f
+            for (i in grid.indices) {
+                contrast += kotlin.math.abs(grid[i] - avgFloat)
+                if (grid[i] > occupancyThreshold) {
+                    occupancy += 1f
+                }
+                val x = i % gridSize
+                val y = i / gridSize
+                if (x + 1 < gridSize) {
+                    edge += kotlin.math.abs(grid[i] - grid[i + 1]).toFloat()
+                }
+                if (y + 1 < gridSize) {
+                    edge += kotlin.math.abs(grid[i] - grid[i + gridSize]).toFloat()
+                }
+                if (i < 64) {
+                    if (grid[i] > avgFloat) {
+                        hash = hash or (1L shl i)
+                    }
+                }
+            }
+            val contrastScore = if (grid.isNotEmpty()) contrast / grid.size.toFloat() else 0f
+            val edgeScore = if (grid.isNotEmpty()) edge / max(1f, (gridSize * (gridSize - 1) * 2f)) else 0f
+            RoiSignature(grid, average, contrastScore, edgeScore, occupancy / grid.size.toFloat(), hash)
         } catch (e: Exception) {
             Log.w(tag, "Could not build ROI signature", e)
-            RoiSignature(IntArray(64), 0)
+            RoiSignature(IntArray(256), 0, 0f, 0f, 0f, 0L)
         } finally {
             if (normalizedFrame !== frame) {
                 normalizedFrame.recycle()
@@ -2724,11 +2801,25 @@ class VideoCompilationEngine(private val context: Context) {
     }
 
     private fun roiDifference(previous: RoiSignature, current: RoiSignature): Float {
-        var total = kotlin.math.abs(previous.average - current.average).toFloat()
-        for (i in previous.samples.indices) {
-            total += kotlin.math.abs(previous.samples[i] - current.samples[i])
+        var sampleScore = 0f
+        val sampleCount = min(previous.samples.size, current.samples.size)
+        val loopEnd = min(sampleCount, 64)
+        for (i in 0 until loopEnd) {
+            sampleScore += kotlin.math.abs(previous.samples[i] - current.samples[i]).toFloat() / 255f
         }
-        return total / (previous.samples.size + 1).toFloat()
+        val sampleDelta = if (loopEnd > 0) sampleScore / loopEnd.toFloat() * 100f else 0f
+        val avgDelta = kotlin.math.abs(previous.average - current.average).toFloat()
+        val contrastDelta = kotlin.math.abs(previous.contrast - current.contrast) * 100f
+        val edgeDelta = kotlin.math.abs(previous.edgeEnergy - current.edgeEnergy) * 100f
+        val occupancyDelta = kotlin.math.abs(previous.occupancy - current.occupancy) * 100f
+        val hashDelta = java.lang.Long.bitCount(previous.hash xor current.hash).toFloat() / 64f * 100f
+
+        return sampleDelta * 0.52f +
+            avgDelta * 0.06f +
+            contrastDelta * 0.12f +
+            edgeDelta * 0.15f +
+            occupancyDelta * 0.10f +
+            hashDelta * 0.20f
     }
 
     private inline fun <T> measureTimeMillisWithResult(block: () -> T): TimedResult<T> {
@@ -2774,8 +2865,9 @@ class VideoCompilationEngine(private val context: Context) {
                 put("skippedStableMs", report.metrics.skippedStableMs)
                 put("acceptedTransitions", report.metrics.acceptedTransitions)
                 put("rejectedCandidates", report.metrics.rejectedCandidates)
-                put("normalSpeedGateMet", report.metrics.throughputVideoToWall >= 2.0f)
-                put("ocrReductionGateMet", report.metrics.ocrReductionPercent >= 80)
+                put("scanRate20xGateMet", report.metrics.throughputVideoToWall >= 20f)
+                put("scanRate30xGateMet", report.metrics.throughputVideoToWall >= 30f)
+                put("ocrReductionGateMet", report.metrics.ocrReductionPercent >= 90)
             })
             put("candidates", JSONArray().apply {
                 report.candidates.forEach { candidate ->
@@ -3113,7 +3205,8 @@ private data class NumberDetectionResult(
     val value: Int?,
     val cropMs: Long,
     val preprocessMs: Long,
-    val ocrMs: Long
+    val ocrMs: Long,
+    val confidence: Float = 0f
 )
 
 private data class TransitionCandidateWindow(
@@ -3174,7 +3267,7 @@ data class ScanMetrics(
 ) {
     companion object {
         fun empty(): ScanMetrics = ScanMetrics(
-            scannerVersion = "v0.15.1-safe-roi-windowed",
+            scannerVersion = "v0.16.0-change-map-v1",
             wallClockMs = 0L,
             baselineSamplesEstimate = 0,
             visualSamples = 0,
@@ -3213,7 +3306,11 @@ private data class ChangeMapConfig(
 
 private data class RoiSignature(
     val samples: IntArray,
-    val average: Int
+    val average: Int,
+    val contrast: Float,
+    val edgeEnergy: Float,
+    val occupancy: Float,
+    val hash: Long
 )
 
 private data class TimedResult<T>(
