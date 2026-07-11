@@ -8,7 +8,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
@@ -146,7 +145,7 @@ class CompilationWorker(
         } catch (cancelled: CancellationException) {
             Result.failure(workDataOf(KEY_ERROR_MESSAGE to (cancelled.message ?: "Cancelled"), KEY_FALLBACK_USED to fallbackUsed))
         } catch (e: Exception) {
-            Log.e("CompilationWorker", "Compilation failed", e)
+            AppLog.e(applicationContext, "CompilationWorker", "Compilation failed", e)
             Result.failure(workDataOf(KEY_ERROR_MESSAGE to (e.message ?: "Compilation failed"), KEY_FALLBACK_USED to fallbackUsed))
         }
     }
@@ -225,6 +224,16 @@ class CompilationWorker(
         fallbackUsed: Boolean = false
     ) {
         if (percent < 0 || percent > 100) return
+        AppLog.i(applicationContext, "CompilationWorker", "[$phase] $message ($percent%) fallback=$fallbackUsed")
+        publishProgressData(phase, message, percent, fallbackUsed)
+    }
+
+    private fun publishProgressData(
+        phase: String,
+        message: String,
+        percent: Int,
+        fallbackUsed: Boolean = false
+    ) {
         val data = workDataOf(
             KEY_PROGRESS_PHASE to phase,
             KEY_PROGRESS_MESSAGE to message,
@@ -240,7 +249,7 @@ class CompilationWorker(
         percent: Int,
         fallbackUsed: Boolean = false
     ) {
-        setProgressCompat(phase, message, percent, fallbackUsed)
+        publishProgressData(phase, message, percent, fallbackUsed)
         if (!isNotificationEnabled(applicationContext)) return
         val notification = compileNotification(phase, message, percent)
         setForegroundAsync(ForegroundInfo(NOTIFICATION_ID, notification))

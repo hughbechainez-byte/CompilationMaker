@@ -322,7 +322,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="Open crash log" />
+            android:text="Open log" />
 
         <ProgressBar
             android:id="@+id/progressBar"

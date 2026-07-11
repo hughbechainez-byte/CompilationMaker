@@ -23,8 +23,8 @@ android {
         applicationId = "com.hughbechainez.compilationmaker"
         minSdk = 24
         targetSdk = 35
-        versionCode = 33
-        versionName = "0.17.1"
+        versionCode = 34
+        versionName = "0.17.2"
 
         vectorDrawables {
             useSupportLibrary = true

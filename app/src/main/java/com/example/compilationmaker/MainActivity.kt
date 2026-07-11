@@ -37,7 +37,6 @@ import android.provider.Settings
 import android.text.format.DateFormat
 import android.text.Editable
 import android.text.TextWatcher
-import android.util.Log
 import android.util.Base64
 import android.view.Surface
 import android.view.View
@@ -1033,7 +1032,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this@MainActivity, "Export saved", Toast.LENGTH_LONG).show()
                 clearPendingCompilationPreview(deleteFile = true)
             } catch (e: Exception) {
-                Log.e(logTag, "Save failed", e)
+                AppLog.e(this@MainActivity, logTag, "Save failed", e)
                 emitProgress("Save failed: ${e.message ?: "failed"}", 100)
             } finally {
                 isBusy = false
@@ -1105,7 +1104,7 @@ class MainActivity : AppCompatActivity() {
             }
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                 MediaScannerConnection.scanFile(this@MainActivity, arrayOf(outFile.absolutePath), arrayOf(safeFormat.mimeType)) { p, uri ->
-                    Log.d(logTag, "Scanned output: $p -> $uri")
+                    AppLog.d(this@MainActivity, logTag, "Scanned output: $p -> $uri")
                 }
             }
             return@withContext outFile.absolutePath
@@ -1150,7 +1149,7 @@ class MainActivity : AppCompatActivity() {
         lastProgressText = message
         lastProgressPercent = percentValue
         lastProgressUpdateMs = now
-        Log.d(logTag, "Progress $percentValue%: $message")
+        AppLog.i(this, logTag, "Progress $percentValue%: $message")
         runOnUiThread {
             binding.statusText.text = message
             progressPercentText.text = "$percentValue%"
@@ -1218,7 +1217,7 @@ class MainActivity : AppCompatActivity() {
         try {
             NotificationManagerCompat.from(this).notify(progressNotificationId, notification)
         } catch (e: SecurityException) {
-            Log.w(logTag, "Notification permission unavailable", e)
+            AppLog.w(this@MainActivity, logTag, "Notification permission unavailable", e)
         }
     }
 
@@ -1262,19 +1261,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showCrashLogDialog() {
-        val crashLog = readCrashReport(this)
-        val message = crashLog ?: "No saved crash log found."
+        val savedLog = readSavedLog(this)
+        val message = savedLog?.text ?: "No saved log captured yet."
+        val title = savedLog?.title ?: "Saved log"
+        val logView = TextView(this).apply {
+            setTextIsSelectable(true)
+            setText(message)
+            setPadding(32, 24, 32, 24)
+            typeface = android.graphics.Typeface.MONOSPACE
+            textSize = 11f
+        }
+        val scrollView = ScrollView(this).apply {
+            addView(logView)
+        }
         AlertDialog.Builder(this)
-            .setTitle("Crash log")
-            .setMessage(message)
+            .setTitle(title)
+            .setView(scrollView)
             .setPositiveButton("Copy") { _, _ ->
                 val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(ClipData.newPlainText("CompilationMaker crash log", message))
-                emitProgress("Crash log copied to clipboard.", 100)
+                clipboard.setPrimaryClip(ClipData.newPlainText("CompilationMaker log", message))
+                emitProgress("Log copied to clipboard.", 100)
             }
-            .setNeutralButton("Clear") { _, _ ->
+            .setNeutralButton("Clear log") { _, _ ->
                 clearCrashReport(this)
-                emitProgress("Crash log cleared.", 100)
+                emitProgress("Saved log cleared.", 100)
             }
             .setNegativeButton("Close", null)
             .show()
@@ -1362,7 +1372,7 @@ class MainActivity : AppCompatActivity() {
                 1
             )
         } catch (e: Exception) {
-            Log.w(logTag, "Failed to restore ROI metadata", e)
+            AppLog.w(this@MainActivity, logTag, "Failed to restore ROI metadata", e)
             emitProgress("Saved ROI metadata was unavailable. Using defaults.", 1)
         }
     }
@@ -1389,7 +1399,7 @@ class MainActivity : AppCompatActivity() {
             selectedVideoWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
             selectedVideoHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
         } catch (e: Exception) {
-            Log.w(logTag, "Could not read video metadata", e)
+            AppLog.w(this@MainActivity, logTag, "Could not read video metadata", e)
             selectedVideoRotationDegrees = 0
             selectedVideoWidth = 0
             selectedVideoHeight = 0
@@ -1576,7 +1586,7 @@ class MainActivity : AppCompatActivity() {
         val connection = try {
             java.net.URL(info.downloadUrl).openConnection() as java.net.HttpURLConnection
         } catch (e: Exception) {
-            Log.w(logTag, "Unable to open update download connection", e)
+            AppLog.w(this@MainActivity, logTag, "Unable to open update download connection", e)
             return null
         }
 
@@ -1587,7 +1597,7 @@ class MainActivity : AppCompatActivity() {
             connection.setRequestProperty("Accept", "application/vnd.android.package-archive,*/*")
             connection.connect()
             if (connection.responseCode !in 200..299) {
-                Log.w(logTag, "Update download failed with HTTP ${connection.responseCode}")
+                AppLog.w(this@MainActivity, logTag, "Update download failed with HTTP ${connection.responseCode}")
                 return null
             }
             connection.inputStream.use { input ->
@@ -1602,7 +1612,7 @@ class MainActivity : AppCompatActivity() {
             }
             if (target.length() > 0L) target else null
         } catch (e: Exception) {
-            Log.w(logTag, "Update download failed", e)
+            AppLog.w(this@MainActivity, logTag, "Update download failed", e)
             target.delete()
             null
         } finally {
@@ -1637,7 +1647,7 @@ class MainActivity : AppCompatActivity() {
         try {
             startActivity(installIntent)
         } catch (e: Exception) {
-            Log.w(logTag, "Unable to open Android package installer", e)
+            AppLog.w(this@MainActivity, logTag, "Unable to open Android package installer", e)
             emitProgress("Could not open Android installer for downloaded update.", 100)
         }
     }
@@ -1872,7 +1882,7 @@ class VideoCompilationEngine(private val context: Context) {
         fallbackUsed: Boolean = false,
         progress: (String, Int) -> Unit
     ): ScanFindResult = withContext(Dispatchers.IO) {
-        Log.d(tag, "Starting scan for number transitions: $sourceUri")
+        AppLog.d(context, tag, "Starting scan for number transitions: $sourceUri")
         val retriever = android.media.MediaMetadataRetriever().apply {
             setDataSource(context, sourceUri)
         }
@@ -1885,7 +1895,7 @@ class VideoCompilationEngine(private val context: Context) {
             sourceHeight = sourceHeight
         )
         if (BuildConfig.DEBUG) {
-            Log.d(tag, "Scan source video=${sourceWidth}x${sourceHeight} rotation=${sourceRotationDegrees} roi=${scanWindow.xPercent},${scanWindow.yPercent},${scanWindow.widthPercent},${scanWindow.heightPercent} quality=$scanProfileLabel mode=$scanMode")
+            AppLog.d(context, tag, "Scan source video=${sourceWidth}x${sourceHeight} rotation=${sourceRotationDegrees} roi=${scanWindow.xPercent},${scanWindow.yPercent},${scanWindow.widthPercent},${scanWindow.heightPercent} quality=$scanProfileLabel mode=$scanMode")
         }
         val timing = ScanTimingSummary()
             val scanConfig = when (scanMode) {
@@ -2366,7 +2376,8 @@ class VideoCompilationEngine(private val context: Context) {
                     "$transitionLabel (candidate ${index + 1}/${candidateWindowsForRefine.size}) at ${formatMs(transitionAtMs)}; cut ${formatMs(cutStartMs)} -> ${formatMs(cutEndMs)}",
                     progressPercent
                 )
-                Log.d(
+                AppLog.d(
+                    context,
                     tag,
                     "candidate=$index score=${candidate.peakScore} before=$beforeNumber after=$transitionTargetNumber @${formatMs(transitionAtMs)}"
                 )
@@ -2741,7 +2752,7 @@ class VideoCompilationEngine(private val context: Context) {
             }
             cropToWindow(frame, scanWindow)
         } catch (e: Exception) {
-            Log.w(tag, "Failed to crop scan area", e)
+            AppLog.w(context, tag, "Failed to crop scan area", e)
             null
         } ?: return null
 
@@ -2772,7 +2783,7 @@ class VideoCompilationEngine(private val context: Context) {
             }
             best.value
         } catch (e: Exception) {
-            Log.w(tag, "Skipping OCR frame after vision input failure: ${e::class.java.simpleName}: ${e.message}", e)
+            AppLog.w(context, tag, "Skipping OCR frame after vision input failure: ${e::class.java.simpleName}: ${e.message}", e)
             null
         } finally {
             if (scaled != corner) {
@@ -2802,7 +2813,7 @@ class VideoCompilationEngine(private val context: Context) {
             if (normalizedFrame.width <= 0 || normalizedFrame.height <= 0) return NumberDetectionResult(null, 0L, 0L, 0L, 0f)
             cropToWindow(normalizedFrame, scanWindow)
         } catch (e: Exception) {
-            Log.w(tag, "Failed to crop scan area", e)
+            AppLog.w(context, tag, "Failed to crop scan area", e)
             if (normalizedFrame !== frame) {
                 normalizedFrame.recycle()
             }
@@ -2853,7 +2864,7 @@ class VideoCompilationEngine(private val context: Context) {
             val chosen = best ?: DigitRecognition(null, "", 0f, "raw")
             NumberDetectionResult(chosen.value, cropMs, preprocessMs, totalOcrMs, chosen.confidence, chosen.rawText, chosen.branch)
         } catch (e: Exception) {
-            Log.w(tag, "Skipping OCR frame after vision input failure: ${e::class.java.simpleName}: ${e.message}", e)
+            AppLog.w(context, tag, "Skipping OCR frame after vision input failure: ${e::class.java.simpleName}: ${e.message}", e)
             NumberDetectionResult(null, cropMs, preprocessMs, 0L, 0f, "", "error")
         } finally {
             if (scaled != corner) {
@@ -2928,7 +2939,7 @@ class VideoCompilationEngine(private val context: Context) {
                 }
             }
         } catch (e: Exception) {
-            Log.w(tag, "Frame fetch failed at ${cursorMs}ms", e)
+            AppLog.w(context, tag, "Frame fetch failed at ${cursorMs}ms", e)
             null
         }
     }
@@ -2951,7 +2962,7 @@ class VideoCompilationEngine(private val context: Context) {
                 ) ?: return null
                 DecodedFrame(timeMs, bitmap)
             } catch (e: Exception) {
-                Log.w(tag, "Frame decode failed at $timeMs", e)
+                AppLog.w(context, tag, "Frame decode failed at $timeMs", e)
                 null
             }
         }
@@ -3012,7 +3023,7 @@ class VideoCompilationEngine(private val context: Context) {
             )
             FrameProviderSelection(codecProvider, codecProvider::class.simpleName ?: "MediaCodecFrameProvider")
         } catch (e: Exception) {
-            Log.w(tag, "MediaCodec provider unavailable; using retriever fallback", e)
+            AppLog.w(context, tag, "MediaCodec provider unavailable; using retriever fallback", e)
             FrameProviderSelection(
                 provider = retrieverFrameProvider,
                 providerLabel = retrieverFrameProvider::class.simpleName ?: "RetrieverFrameProvider",
@@ -3161,7 +3172,7 @@ class VideoCompilationEngine(private val context: Context) {
                     }
                 }
             } catch (e: Exception) {
-                Log.w(tag, "MediaCodec frame provider failed; will fall back to retriever", e)
+                AppLog.w(context, tag, "MediaCodec frame provider failed; will fall back to retriever", e)
                 throw e
             } finally {
                 runCatching { codec?.stop() }
@@ -3301,7 +3312,7 @@ class VideoCompilationEngine(private val context: Context) {
             val edgeScore = if (grid.isNotEmpty()) edge / max(1f, (gridSize * (gridSize - 1) * 2f)) else 0f
             RoiSignature(grid, average, contrastScore, edgeScore, occupancy / grid.size.toFloat(), hash)
         } catch (e: Exception) {
-            Log.w(tag, "Could not build ROI signature", e)
+            AppLog.w(context, tag, "Could not build ROI signature", e)
             RoiSignature(IntArray(256), 0, 0f, 0f, 0f, 0L)
         } finally {
             if (normalizedFrame !== frame) {
@@ -3449,7 +3460,8 @@ class VideoCompilationEngine(private val context: Context) {
         val rect = SafeVisionImage.computeSafeCropRect(frame.width, frame.height, scanWindow)
             ?: throw IllegalArgumentException("Invalid analysis frame ${frame.width}x${frame.height}; ML Kit input requires at least ${MIN_INPUT_IMAGE_DIMENSION}x${MIN_INPUT_IMAGE_DIMENSION}")
         if (BuildConfig.DEBUG) {
-            Log.d(
+            AppLog.d(
+                context,
                 tag,
                 "ROI crop source=${frame.width}x${frame.height} roi=${scanWindow.xPercent},${scanWindow.yPercent},${scanWindow.widthPercent},${scanWindow.heightPercent} " +
                     "crop=${rect.left},${rect.top},${rect.width}x${rect.height} fallback=${rect.usedFullFrameFallback}"
@@ -3661,7 +3673,7 @@ class VideoCompilationEngine(private val context: Context) {
             }.sortedBy { it.startMs }
             mergeOverlapping(aligned)
         } catch (e: Exception) {
-            Log.w(tag, "Unable to align export segments to video sync samples", e)
+            AppLog.w(context, tag, "Unable to align export segments to video sync samples", e)
             segments
         } finally {
             extractor.release()
