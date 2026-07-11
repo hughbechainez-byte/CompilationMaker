@@ -1791,48 +1791,48 @@ class VideoCompilationEngine(private val context: Context) {
         val timing = ScanTimingSummary()
         val scanConfig = when (scanMode) {
             ScanMode.StableCheckpoint -> ChangeMapConfig(
-                sampleStepMs = frameStepMs.coerceAtLeast(500L),
-                signatureScaleWidthPx = 180,
-                candidatePadMs = 3_000L,
-                candidateMergeGapMs = 1_000L,
-                changeThreshold = 7.0f,
-                periodicProbeMs = 2_800L,
-                neighborhoodStepMs = 500L,
-                refineWindowMs = 2_700L,
-                refineIterations = 10,
-                dedupeMs = 1_200L,
-                prefirstProbeMs = 2_500L,
-                maxVisualSamples = 3_000,
-                totalScanBudgetMs = 65_000L,
-                ocrBudgetMs = 28_000L,
+                sampleStepMs = frameStepMs.coerceAtLeast(250L),
+                signatureScaleWidthPx = 220,
+                candidatePadMs = 2_500L,
+                candidateMergeGapMs = 900L,
+                changeThreshold = 10.5f,
+                periodicProbeMs = 7_000L,
+                neighborhoodStepMs = 300L,
+                refineWindowMs = 2_200L,
+                refineIterations = 8,
+                dedupeMs = 900L,
+                prefirstProbeMs = 2_000L,
+                maxVisualSamples = 4_200,
+                totalScanBudgetMs = 110_000L,
+                ocrBudgetMs = 35_000L,
                 maxCandidateWindows = 64,
                 ocrFrameWidthPx = 240,
-                stableMaxStepMs = 5_000L,
-                stableRampSamples = 3,
-                denseRefineStepMs = 250L,
-                baselineStepMs = frameStepMs.coerceAtLeast(500L)
-            )
-            ScanMode.Experimental -> ChangeMapConfig(
-                sampleStepMs = 1_000L,
-                signatureScaleWidthPx = experimentalDownscaleSize.coerceIn(8, 64).coerceAtLeast(16),
-                candidatePadMs = 4_500L,
-                candidateMergeGapMs = 1_100L,
-                changeThreshold = 3.5f,
-                periodicProbeMs = 1_000L,
-                neighborhoodStepMs = 1_000L,
-                refineWindowMs = 4_200L,
-                refineIterations = 11,
-                dedupeMs = 700L,
-                prefirstProbeMs = 2_200L,
-                maxVisualSamples = 6_000,
-                totalScanBudgetMs = 120_000L,
-                ocrBudgetMs = 45_000L,
-                maxCandidateWindows = 120,
-                ocrFrameWidthPx = experimentalDownscaleSize.coerceAtLeast(16),
-                stableMaxStepMs = 6_000L,
+                stableMaxStepMs = 2_500L,
                 stableRampSamples = 4,
                 denseRefineStepMs = 250L,
-                baselineStepMs = 1_000L
+                baselineStepMs = frameStepMs.coerceAtLeast(250L)
+            )
+            ScanMode.Experimental -> ChangeMapConfig(
+                sampleStepMs = frameStepMs.coerceAtLeast(125L),
+                signatureScaleWidthPx = experimentalDownscaleSize.coerceIn(8, 64).coerceAtLeast(16),
+                candidatePadMs = 2_000L,
+                candidateMergeGapMs = 1_100L,
+                changeThreshold = 8.5f,
+                periodicProbeMs = 5_000L,
+                neighborhoodStepMs = 250L,
+                refineWindowMs = 2_500L,
+                refineIterations = 10,
+                dedupeMs = 700L,
+                prefirstProbeMs = 1_500L,
+                maxVisualSamples = 7_500,
+                totalScanBudgetMs = 120_000L,
+                ocrBudgetMs = 48_000L,
+                maxCandidateWindows = 140,
+                ocrFrameWidthPx = experimentalDownscaleSize.coerceAtLeast(16),
+                stableMaxStepMs = 2_000L,
+                stableRampSamples = 2,
+                denseRefineStepMs = 200L,
+                baselineStepMs = frameStepMs.coerceAtLeast(125L)
             )
         }
 
@@ -1855,6 +1855,9 @@ class VideoCompilationEngine(private val context: Context) {
             var cursorMs = 0L
             var previousSignature: RoiSignature? = null
             var msSinceLastCandidate = Long.MAX_VALUE
+            var consecutiveChangedSamples = 0
+            var pendingChangeStartMs: Long? = null
+            var pendingPeakScore = 0f
             var currentStepMs = adaptiveStepMs
             var stableSamples = 0
             var visualSamples = 0
@@ -1895,15 +1898,39 @@ class VideoCompilationEngine(private val context: Context) {
                     visualSamples++
                     val signature = computeRoiSignature(frame, scanWindow, sourceRotationDegrees)
                     val signatureDelta = previousSignature?.let { roiDifference(it, signature) } ?: 0f
-                    val visualChange = signatureDelta >= scanConfig.changeThreshold
+                    val rawVisualChange = signatureDelta >= scanConfig.changeThreshold
+                    if (rawVisualChange) {
+                        consecutiveChangedSamples += 1
+                        if (pendingChangeStartMs == null) {
+                            pendingChangeStartMs = cursorMs
+                        }
+                        pendingPeakScore = max(pendingPeakScore, signatureDelta)
+                    } else {
+                        consecutiveChangedSamples = 0
+                        pendingChangeStartMs = null
+                        pendingPeakScore = 0f
+                    }
+
+                    val visualChangeDetected = rawVisualChange && consecutiveChangedSamples >= 2
                     val periodicProbe = msSinceLastCandidate >= effectivePeriodicProbeMs
-                    val shouldProbe = previousSignature == null || visualChange || periodicProbe
+                    val shouldProbe = previousSignature == null || visualChangeDetected || periodicProbe
+                    val probeSeedMs = if (visualChangeDetected && pendingChangeStartMs != null) {
+                        pendingChangeStartMs
+                    } else {
+                        cursorMs
+                    }
+                    val probePeakScore = if (visualChangeDetected && pendingPeakScore > 0f) {
+                        pendingPeakScore
+                    } else {
+                        signatureDelta
+                    }
                     if (shouldProbe) {
-                        val padStart = max(0L, cursorMs - scanConfig.candidatePadMs)
-                        val padEnd = min(durationMs, cursorMs + scanConfig.candidatePadMs)
+                        val padStart = max(0L, probeSeedMs - scanConfig.candidatePadMs)
+                        val padEnd = min(durationMs, probeSeedMs + scanConfig.candidatePadMs)
+                        val seedMs = probeSeedMs
                         val reason = when {
                             previousSignature == null -> CandidateReason.InitialProbe
-                            visualChange -> CandidateReason.VisualChange
+                            visualChangeDetected -> CandidateReason.VisualChange
                             else -> CandidateReason.PeriodicProbe
                         }
                         if (candidateWindows.isNotEmpty()) {
@@ -1912,8 +1939,8 @@ class VideoCompilationEngine(private val context: Context) {
                                 candidateWindows[candidateWindows.lastIndex] = last.copy(
                                     startMs = min(last.startMs, padStart),
                                     endMs = max(last.endMs, padEnd),
-                                    seedMs = (last.seedMs + cursorMs) / 2L,
-                                    peakScore = max(last.peakScore, signatureDelta),
+                                    seedMs = (last.seedMs + seedMs) / 2L,
+                                    peakScore = max(last.peakScore, probePeakScore),
                                     reason = if (last.reason == CandidateReason.VisualChange || reason == CandidateReason.VisualChange) CandidateReason.VisualChange else last.reason,
                                     sampleCount = last.sampleCount + 1
                                 )
@@ -1922,8 +1949,8 @@ class VideoCompilationEngine(private val context: Context) {
                                     TransitionCandidateWindow(
                                         startMs = padStart,
                                         endMs = padEnd,
-                                        seedMs = cursorMs,
-                                        peakScore = signatureDelta,
+                                        seedMs = seedMs,
+                                        peakScore = probePeakScore,
                                         reason = reason,
                                         sampleCount = 1
                                     )
@@ -1934,14 +1961,17 @@ class VideoCompilationEngine(private val context: Context) {
                                 TransitionCandidateWindow(
                                     startMs = padStart,
                                     endMs = padEnd,
-                                    seedMs = cursorMs,
-                                    peakScore = signatureDelta,
+                                    seedMs = seedMs,
+                                    peakScore = probePeakScore,
                                     reason = reason,
                                     sampleCount = 1
                                 )
                             )
                         }
                         msSinceLastCandidate = 0L
+                        pendingChangeStartMs = null
+                        pendingPeakScore = 0f
+                        consecutiveChangedSamples = 0
                         stableSamples = 0
                         currentStepMs = adaptiveStepMs
                     } else {
