@@ -2,15 +2,15 @@
   "version": "v0.17.5",
   "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.5",
   "apk": {
-    "url": ""
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.5/CompilationMaker-v0.17.5.apk"
   },
-  "notes": "Hardened bundled ML Kit OCR confirmation with explicit Task outcome callbacks, preflight readiness, one controlled timeout retry, candidate-local failure handling, baseline-safe transition detection, and direct sparse checkpoint sampling.",
+  "notes": "Hardened bundled ML Kit OCR confirmation with explicit Task success/failure/cancellation callbacks, preflight readiness, one controlled timeout retry, candidate-local OCR failure handling, baseline-safe transition detection, and direct sparse checkpoint sampling. Existing foreground-service, WorkManager UUID persistence, KEEP policy, ROI pause, lifecycle restoration, and finalization logging are preserved.",
   "updates": [
     {
       "version": "v0.17.5",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.5",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.5/CompilationMaker-v0.17.5.apk",
-      "notes": "Hardened bundled ML Kit OCR confirmation with explicit Task outcome callbacks, preflight readiness, one controlled timeout retry, candidate-local failure handling, baseline-safe transition detection, and direct sparse checkpoint sampling."
+      "notes": "Hardened bundled ML Kit OCR confirmation with explicit Task success/failure/cancellation callbacks, preflight readiness, one controlled timeout retry, candidate-local OCR failure handling, baseline-safe transition detection, and direct sparse checkpoint sampling."
     },
     {
       "version": "v0.17.4",
