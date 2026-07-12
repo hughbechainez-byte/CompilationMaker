@@ -1,58 +1,130 @@
 {
-  "version": "v0.17.3",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.3",
+  "version": "v0.17.4",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.4",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.3/CompilationMaker-v0.17.3.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.4/CompilationMaker-v0.17.4.apk"
   },
-  "notes": "Release 0.17.3: fixes the Android 15 foreground-service startup crash and restores visible 3-minute, 1-minute, and 5-minute checkpoint scan options while keeping Fast change-map (500ms) as the default.",
+  "notes": "Fixes the v0.17.3 compilation job-lifecycle failure after scan-budget cutoff. The bounded MediaCodec decoder now queues EOS and stops cleanly; finalization, OCR confirmation, clip planning, export, muxing, and verification are bounded and fully logged. Active WorkRequest UUID, source, explicit pipeline state, destination, and verified output metadata are durably restored across Activity/process recreation. ROI, update, log, and compilation progress channels are isolated. Success now requires a readable non-empty video with valid duration and video track. Android 15 typed foreground-service handling and the Fast change-map/ROI/checkpoint/clip pipeline are preserved. Validation: clean debug/release builds and 120 unit tests passed. Pixel device validation was unavailable because no adb device was connected.",
   "updates": [
+    {
+      "version": "v0.17.4",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.4",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.4/CompilationMaker-v0.17.4.apk",
+      "notes": "Fixes the v0.17.3 compilation job-lifecycle failure after scan-budget cutoff. The bounded MediaCodec decoder now queues EOS and stops cleanly; finalization, OCR confirmation, clip planning, export, muxing, and verification are bounded and fully logged. Active WorkRequest UUID, source, explicit pipeline state, destination, and verified output metadata are durably restored across Activity/process recreation. ROI, update, log, and compilation progress channels are isolated. Success now requires a readable non-empty video with valid duration and video track. Android 15 typed foreground-service handling and the Fast change-map/ROI/checkpoint/clip pipeline are preserved. Validation: clean debug/release builds and 120 unit tests passed. Pixel device validation was unavailable because no adb device was connected."
+    },
     {
       "version": "v0.17.3",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.3",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.3/CompilationMaker-v0.17.3.apk",
-      "notes": "Android 15 typed foreground-service fix plus restored visible 3-minute, 1-minute, and 5-minute checkpoint scan options; Fast change-map (500ms) remains the default"
+      "notes": "## What's new\n\n- Fixed the Android 15 `InvalidForegroundServiceTypeException` crash by using typed WorkManager foreground execution.\n- Restored visible 3-minute, 1-minute, and 5-minute checkpoint scan options.\n- Kept Fast change-map (500 ms) as the default scan option.\n- Preserved the existing ROI, change-map, checkpoint, clip, decoder, and export pipeline behavior.\n\n**Full changelog:** https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.2...v0.17.3"
     },
     {
       "version": "v0.17.2",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.2",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.2/CompilationMaker-v0.17.2.apk",
-      "notes": "persistent rolling app trace, crash snapshot capture, and log viewer copy/clear actions"
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.1...v0.17.2"
     },
     {
       "version": "v0.17.1",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.1",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.1/CompilationMaker-v0.17.1.apk",
-      "notes": "crash log viewer button, persisted last-crash capture, and copy/clear crash report actions"
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.0...v0.17.1"
     },
     {
       "version": "v0.17.0",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.0",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.0/CompilationMaker-v0.17.0.apk",
-      "notes": "streaming MediaCodec coarse scan, explicit no-transition failure, multi-branch OCR preprocessing, export validation, and duration correctness fixes"
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.16.4...v0.17.0"
     },
     {
       "version": "v0.16.4",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.4",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.4/CompilationMaker-v0.16.4.apk",
-      "notes": "finalize change-map scan optimization (500ms fast mode default), two-hit number confirmation, high-confidence OCR fallback, and richer ROI feature scoring"
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.16.3...v0.16.4"
     },
     {
       "version": "v0.16.3",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.3",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.3/CompilationMaker-v0.16.3.apk",
-      "notes": "strengthen OCR validation and ROI feature vector"
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.16.2...v0.16.3"
     },
     {
       "version": "v0.16.2",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.2",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.2/CompilationMaker-v0.16.2.apk",
-      "notes": "add change-map config tuning and visual hysteresis"
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.16.1...v0.16.2"
     },
     {
       "version": "v0.16.1",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.1",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.1/CompilationMaker-v0.16.1.apk",
-      "notes": "simplify scan controls and default profile"
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.15.1...v0.16.1"
+    },
+    {
+      "version": "v0.15.1",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.15.1",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.15.1/CompilationMaker-v0.15.1.apk",
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.15.0...v0.15.1"
+    },
+    {
+      "version": "v0.15.0",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.15.0",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.15.0/CompilationMaker-v0.15.0.apk",
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.6...v0.15.0"
+    },
+    {
+      "version": "v0.14.6",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.6",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.6/CompilationMaker-v0.14.6.apk",
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.5...v0.14.6"
+    },
+    {
+      "version": "v0.14.5",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.5",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.5/CompilationMaker-v0.14.5.apk",
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.4...v0.14.5"
+    },
+    {
+      "version": "v0.14.4",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.4",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.4/CompilationMaker-v0.14.4.apk",
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.3...v0.14.4"
+    },
+    {
+      "version": "v0.14.3",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.3",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.3/CompilationMaker-v0.14.3.apk",
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.2...v0.14.3"
+    },
+    {
+      "version": "v0.14.2",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.2",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.2/CompilationMaker-v0.14.2.apk",
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.1...v0.14.2"
+    },
+    {
+      "version": "v0.14.1",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.1",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.1/CompilationMaker-v0.14.1.apk",
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.0...v0.14.1"
+    },
+    {
+      "version": "v0.14.0",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.0",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.0/CompilationMaker-v0.14.0.apk",
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.13.3...v0.14.0"
+    },
+    {
+      "version": "v0.13.3",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.13.3",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.13.3/CompilationMaker-v0.13.3.apk",
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.13.2...v0.13.3"
+    },
+    {
+      "version": "v0.13.2",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.13.2",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.13.2/CompilationMaker-v0.13.2.apk",
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.13.1...v0.13.2"
     }
   ]
 }
