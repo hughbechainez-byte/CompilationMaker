@@ -1,16 +1,22 @@
 {
-  "version": "v0.17.4",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.4",
+  "version": "v0.17.5",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.5",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.4/CompilationMaker-v0.17.4.apk"
+    "url": ""
   },
-  "notes": "Fixes the v0.17.3 compilation job-lifecycle failure after scan-budget cutoff. The bounded MediaCodec decoder now queues EOS and stops cleanly; finalization, OCR confirmation, clip planning, export, muxing, and verification are bounded and fully logged. Active WorkRequest UUID, source, explicit pipeline state, destination, and verified output metadata are durably restored across Activity/process recreation. ROI, update, log, and compilation progress channels are isolated. Success now requires a readable non-empty video with valid duration and video track. Android 15 typed foreground-service handling and the Fast change-map/ROI/checkpoint/clip pipeline are preserved. Validation: clean debug/release builds and 120 unit tests passed. Pixel device validation was unavailable because no adb device was connected.",
+  "notes": "Hardened bundled ML Kit OCR confirmation with explicit Task outcome callbacks, preflight readiness, one controlled timeout retry, candidate-local failure handling, baseline-safe transition detection, and direct sparse checkpoint sampling.",
   "updates": [
+    {
+      "version": "v0.17.5",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.5",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.5/CompilationMaker-v0.17.5.apk",
+      "notes": "Hardened bundled ML Kit OCR confirmation with explicit Task outcome callbacks, preflight readiness, one controlled timeout retry, candidate-local failure handling, baseline-safe transition detection, and direct sparse checkpoint sampling."
+    },
     {
       "version": "v0.17.4",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.4",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.4/CompilationMaker-v0.17.4.apk",
-      "notes": "Fixes the v0.17.3 compilation job-lifecycle failure after scan-budget cutoff. The bounded MediaCodec decoder now queues EOS and stops cleanly; finalization, OCR confirmation, clip planning, export, muxing, and verification are bounded and fully logged. Active WorkRequest UUID, source, explicit pipeline state, destination, and verified output metadata are durably restored across Activity/process recreation. ROI, update, log, and compilation progress channels are isolated. Success now requires a readable non-empty video with valid duration and video track. Android 15 typed foreground-service handling and the Fast change-map/ROI/checkpoint/clip pipeline are preserved. Validation: clean debug/release builds and 120 unit tests passed. Pixel device validation was unavailable because no adb device was connected."
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.3...v0.17.4"
     },
     {
       "version": "v0.17.3",
@@ -119,12 +125,6 @@
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.13.3",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.13.3/CompilationMaker-v0.13.3.apk",
       "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.13.2...v0.13.3"
-    },
-    {
-      "version": "v0.13.2",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.13.2",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.13.2/CompilationMaker-v0.13.2.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.13.1...v0.13.2"
     }
   ]
 }
