@@ -1,0 +1,63 @@
+name: Release Android QA
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  emulator-qa:
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        shell: pwsh
+        run: sdkmanager "platform-tools" "emulator" "platforms;android-35" "build-tools;35.0.0" "system-images;android-35;google_apis;x86_64"
+
+      - name: Download test fixtures
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path test-fixtures | Out-Null
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.5/compilation-test-video-A.mp4" -OutFile test-fixtures/compilation_test_video_A.mp4
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.5/compilation-test-video-B.mp4" -OutFile test-fixtures/compilation_test_video_B.mp4
+
+      - name: Download release APK
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || 'v0.17.5' }}
+        run: gh release download "$env:RELEASE_TAG" --repo "${{ github.repository }}" --pattern "*.apk" --dir test-fixtures
+
+      - name: Normalize release APK name
+        shell: pwsh
+        run: Rename-Item (Get-ChildItem test-fixtures/*.apk | Select-Object -First 1) test-fixtures/release.apk
+
+      - name: Run emulator self-test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
+          script: pwsh -NoProfile -File "${{ github.workspace }}\tools\android-qa\run-release-qa.ps1" -ApkPath "${{ github.workspace }}\test-fixtures\release.apk" -VideoAPath "${{ github.workspace }}\test-fixtures\compilation_test_video_A.mp4" -VideoBPath "${{ github.workspace }}\test-fixtures\compilation_test_video_B.mp4" -ScanProfile "1-minute checkpoints"
+
+      - name: Upload QA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-qa-artifacts
+          path: qa-artifacts
