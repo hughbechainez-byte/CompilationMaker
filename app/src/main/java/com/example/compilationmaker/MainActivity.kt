@@ -79,11 +79,15 @@ import com.example.compilationmaker.databinding.ActivityMainBinding
 import com.google.mlkit.vision.common.InputImage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
@@ -116,6 +120,7 @@ class MainActivity : AppCompatActivity() {
     private var previewBitmap: Bitmap? = null
     private var pendingCompilationFile: File? = null
     private var pendingCompilationFormat: ExportFormat? = null
+    private var pendingCompilationUri: Uri? = null
     private var isCompilationPreviewScrubbing = false
     private var selectedCompilationPreviewMs = 0
     private var roiTouchMode = RoiTouchMode.NONE
@@ -135,9 +140,9 @@ class MainActivity : AppCompatActivity() {
     private val permissionRequestLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
             if (result.values.any { it }) {
-                binding.statusText.text = "Ready"
+                emitTransientStatus("Permissions updated")
             } else {
-                binding.statusText.text = "Permission required to read videos"
+                emitTransientStatus("Video access permission is still required")
             }
         }
 
@@ -164,11 +169,18 @@ class MainActivity : AppCompatActivity() {
     )
 
     private fun onVideoSelected(picked: Uri) {
+        if (hasActiveCompilation()) {
+            emitTransientStatus("A compilation is already active. Reopen it instead of selecting another video.")
+            restoreActiveCompilationWork()
+            return
+        }
         selectedVideoUri = picked
         loadSelectedVideoMetadata(picked)
         restoreRoiState(picked)
         binding.selectedVideo.text = picked.toString()
-        emitProgress("Video selected: ${picked.toString().take(60)}", 2)
+        persistDraftState(CompilationPipelineState.VIDEO_SELECTED, "Video selected")
+        emitRoiStatus("Video selected: ${picked.toString().take(60)}")
+        setUiBusy(false)
         setupVideoPreview(picked)
     }
 
@@ -205,6 +217,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var playCompilationPreviewButton: Button
     private lateinit var saveCompilationButton: Button
     private lateinit var discardCompilationButton: Button
+    private lateinit var shareCompilationButton: Button
+    private lateinit var openCompilationButton: Button
     private lateinit var frameImage: ImageView
     private lateinit var frameContainer: FrameLayout
     private lateinit var roiOverlay: View
@@ -230,7 +244,7 @@ class MainActivity : AppCompatActivity() {
     private val checkpointProfiles = compilationScanProfiles()
     private val experimentalDownscaleOptions = intArrayOf(16, 24, 32, 40)
     private val defaultScanWindow = ScanWindow(0.0f, 0.8f, 0.10f, 0.30f)
-    private val compilationWorkName = "compilation_scan_export"
+    private val compilationWorkName = CompilationJobContract.UNIQUE_WORK_NAME
     private val progressNotificationChannelId = COMPILATION_NOTIFICATION_CHANNEL_ID
     private val progressNotificationId = ACTIVITY_PROGRESS_NOTIFICATION_ID
     private val updateNotificationChannelId = "compilation_updates"
@@ -239,7 +253,12 @@ class MainActivity : AppCompatActivity() {
     private var compilationWorkId: UUID? = null
     private var activeWorkInfoLiveData: LiveData<WorkInfo?>? = null
     private var activeWorkObserver: Observer<WorkInfo?>? = null
-    private val compileWorkPrefs by lazy { getSharedPreferences("compilation_jobs", MODE_PRIVATE) }
+    private val compilationJobStore by lazy { CompilationJobStore(applicationContext) }
+    private var currentPipelineState = CompilationPipelineState.IDLE
+    private var latestWorkManagerState: WorkInfo.State? = null
+    private var compilationStartInFlight = false
+    private var compilationRestoreInFlight = false
+    private var terminalHandlingWorkId: UUID? = null
     private val updateManifestRawEndpoint =
         "https://raw.githubusercontent.com/hughbechainez-byte/CompilationMaker/master/app-update.json"
     private val updateManifestBlobEndpoint =
@@ -269,13 +288,18 @@ class MainActivity : AppCompatActivity() {
         videoPreview.stopPlayback()
     }
 
+    override fun onResume() {
+        super.onResume()
+        restoreActiveCompilationWork()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         dismissCompilationWorkObserver()
         stopPreviewProgressUpdates()
         stopCompilationPreviewProgressUpdates()
-        pendingCompilationFile?.delete()
         pendingCompilationFile = null
+        pendingCompilationUri = null
         previewBitmap?.recycle()
         previewBitmap = null
     }
@@ -292,6 +316,8 @@ class MainActivity : AppCompatActivity() {
         playCompilationPreviewButton = binding.playCompilationPreviewButton
         saveCompilationButton = binding.saveCompilationButton
         discardCompilationButton = binding.discardCompilationButton
+        shareCompilationButton = binding.shareCompilationButton
+        openCompilationButton = binding.openCompilationButton
         frameImage = binding.frameImage
         frameContainer = binding.frameContainer
         roiOverlay = binding.roiOverlay
@@ -339,10 +365,18 @@ class MainActivity : AppCompatActivity() {
         })
 
         captureFrameButton.setOnClickListener {
+            if (hasActiveCompilation()) {
+                emitTransientStatus("ROI capture is unavailable while compilation is active.")
+                return@setOnClickListener
+            }
             captureFrame(selectedPreviewMs)
         }
 
         videoPreview.setOnPreparedListener { mediaPlayer ->
+            if (hasActiveCompilation()) {
+                emitRoiStatus("ROI preview paused while compilation is active")
+                return@setOnPreparedListener
+            }
             val duration = max(1, mediaPlayer.duration)
             previewSeekBar.max = duration
             previewSeekBar.isEnabled = true
@@ -397,7 +431,7 @@ class MainActivity : AppCompatActivity() {
 
         playCompilationPreviewButton.setOnClickListener {
             if (pendingCompilationFile == null) {
-                emitProgress("Build a compilation preview first.", 100)
+                emitTransientStatus("Build a compilation preview first.")
                 return@setOnClickListener
             }
             if (compilationPreview.isPlaying) {
@@ -414,12 +448,22 @@ class MainActivity : AppCompatActivity() {
             savePendingCompilation()
         }
 
+        shareCompilationButton.setOnClickListener {
+            sharePendingCompilation()
+        }
+
+        openCompilationButton.setOnClickListener {
+            openPendingCompilation()
+        }
+
         discardCompilationButton.setOnClickListener {
             clearPendingCompilationPreview(deleteFile = true)
-            emitProgress("Compilation preview discarded.", 100)
+            persistDraftState(CompilationPipelineState.READY, "Compilation preview discarded")
+            emitTransientStatus("Compilation preview discarded.")
         }
 
         frameImage.setOnTouchListener { _, event ->
+            if (hasActiveCompilation()) return@setOnTouchListener true
             if (previewBitmap == null) {
                 return@setOnTouchListener true
             }
@@ -506,18 +550,24 @@ class MainActivity : AppCompatActivity() {
         }
         wireScanAreaInputs()
         refreshRoiButton.setOnClickListener {
+            if (hasActiveCompilation()) {
+                emitTransientStatus("ROI controls are locked while compilation is active.")
+                return@setOnClickListener
+            }
             val window = readScanWindow()
             setScanAreaFromPercents(window.xPercent, window.yPercent, window.widthPercent, window.heightPercent)
             if (previewBitmap != null) {
                 updateRoiOverlay()
-                emitProgress("ROI refreshed from input values", 4)
+                persistDraftState(CompilationPipelineState.READY, "ROI refreshed")
+                emitRoiStatus("ROI refreshed from input values")
             } else {
-                emitProgress("ROI values saved. Capture a frame to preview ROI box.", 4)
+                persistDraftState(CompilationPipelineState.ROI_SELECTION, "ROI values saved")
+                emitRoiStatus("ROI values saved. Capture a frame to preview ROI box.")
             }
         }
 
         binding.processButton.setOnClickListener {
-            if (isBusy) return@setOnClickListener
+            if (isBusy || compilationStartInFlight) return@setOnClickListener
             val source = selectedVideoUri
             if (source == null) {
                 Toast.makeText(this, "Pick a video first", Toast.LENGTH_SHORT).show()
@@ -527,6 +577,8 @@ class MainActivity : AppCompatActivity() {
             val quality = qualityOptions[qualitySpinner.selectedItemPosition]
             val format = formatOptions[formatSpinner.selectedItemPosition]
             val transitionStyle = transitionStyleOptions[transitionStyleSpinner.selectedItemPosition.coerceIn(0, transitionStyleOptions.lastIndex)]
+            compilationStartInFlight = true
+            setUiBusy(true)
             startCompilationJob(source, quality, format, transitionStyle)
         }
         checkUpdatesButton.setOnClickListener {
@@ -584,7 +636,7 @@ class MainActivity : AppCompatActivity() {
         progressPercentText.text = "0%"
         clearStatusFeed("Ready")
         if (readCrashReport(this) != null) {
-            emitProgress("Crash log available. Tap Open crash log.", 100)
+            emitLogStatus("Crash log available. Tap Open crash log.")
         }
         restoreActiveCompilationWork()
     }
@@ -609,7 +661,27 @@ class MainActivity : AppCompatActivity() {
         transitionStyle: TransitionStyle
     ) {
         lifecycleScope.launch {
-            startCompilationJobOnBackgroundThread(uri, quality, format, transitionStyle)
+            try {
+                startCompilationJobOnBackgroundThread(uri, quality, format, transitionStyle)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                recordHandledWorkerFailure(
+                    this@MainActivity,
+                    logTag,
+                    "Compilation enqueue failed",
+                    failure
+                )
+                currentPipelineState = CompilationPipelineState.FAILED
+                emitCompilationProgress(
+                    "Unable to queue compilation: ${failure.message ?: failure::class.java.simpleName}",
+                    100
+                )
+                setUiBusy(false)
+                isBusy = false
+            } finally {
+                compilationStartInFlight = false
+            }
         }
     }
 
@@ -619,57 +691,49 @@ class MainActivity : AppCompatActivity() {
         format: ExportFormat,
         transitionStyle: TransitionStyle
     ) {
-        if (isBusy) {
-            withContext(Dispatchers.Main) {
-                emitProgress("Compilation already running. Wait for it to finish or restart the app.", 100)
-            }
-            return
+        val previousRecord = compilationJobStore.load()
+        val existing = withContext(Dispatchers.IO) {
+            workManager.getWorkInfosForUniqueWork(compilationWorkName).get()
+                .firstOrNull { isActiveWorkManagerState(it.state) }
         }
-        val existingWorkId = compileWorkPrefs.getString("active_work_id", null)?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-        if (existingWorkId != null) {
-            val existing = withContext(Dispatchers.IO) { workManager.getWorkInfoById(existingWorkId).get() }
-            if (existing != null && (existing.state == WorkInfo.State.RUNNING || existing.state == WorkInfo.State.ENQUEUED)) {
-                withContext(Dispatchers.Main) {
-                    emitProgress("Compilation already running in background. Use status for progress.", 100)
-                    observeCompilationWork(existingWorkId)
-                }
-                return
-            }
-            if (existing == null || existing.state == WorkInfo.State.SUCCEEDED || existing.state == WorkInfo.State.CANCELLED || existing.state == WorkInfo.State.FAILED) {
-                compileWorkPrefs.edit().remove("active_work_id").apply()
-            }
+        if (existing != null) {
+            AppLog.i(
+                this@MainActivity,
+                logTag,
+                "work UUID=${existing.id} unique work name=$compilationWorkName enqueue policy=KEEP " +
+                    "previous job state=${existing.state} new job state=ATTACHED cancellation reason=none"
+            )
+            attachToCompilationWork(existing, previousRecord)
+            emitTransientStatus("Compilation already active; reconnected to ${existing.id}")
+            return
         }
 
         val scanProfile = selectedCheckpointProfile()
         val experimentalMode = experimentalModeSwitch.isChecked
         val requestedScanMode = if (experimentalMode) ScanMode.Experimental else scanProfile.mode
         if (experimentalMode && !readScanWindow().let { it.widthPercent > 0.001f && it.heightPercent > 0.001f }) {
-            withContext(Dispatchers.Main) {
-                emitProgress("Invalid ROI. Capture a frame and choose a valid ROI before running experimental scan.", 100)
-            }
+            emitRoiStatus("Invalid ROI. Capture a frame and choose a valid ROI before running experimental scan.")
+            setUiBusy(false)
+            isBusy = false
             return
         }
 
-        withContext(Dispatchers.Main) {
-            clearPendingCompilationPreview(deleteFile = true)
-            setUiBusy(true)
-            isBusy = true
-            clearStatusFeed("Queued")
-            emitProgress(
-                "Starting ${if (requestedScanMode == ScanMode.Experimental) "Experimental" else "Fast"} change-map scan " +
-                    "(${scanProfile.label}) and preparing output...",
-                0
-            )
-        }
+        clearPendingCompilationPreview(deleteFile = true)
+        setUiBusy(true)
+        isBusy = true
+        clearStatusFeed("Queued")
+
+        val scanWindowJson = JSONObject().apply {
+            put("xPercent", selectedScanWindow.xPercent)
+            put("yPercent", selectedScanWindow.yPercent)
+            put("widthPercent", selectedScanWindow.widthPercent)
+            put("heightPercent", selectedScanWindow.heightPercent)
+        }.toString()
+        val expectedOutput = createExpectedCompilationOutput(format)
 
         val inputData = Data.Builder()
             .putString(CompilationWorker.KEY_SOURCE_URI, uri.toString())
-            .putString(CompilationWorker.KEY_SCAN_WINDOW, JSONObject().apply {
-                put("xPercent", selectedScanWindow.xPercent)
-                put("yPercent", selectedScanWindow.yPercent)
-                put("widthPercent", selectedScanWindow.widthPercent)
-                put("heightPercent", selectedScanWindow.heightPercent)
-            }.toString())
+            .putString(CompilationWorker.KEY_SCAN_WINDOW, scanWindowJson)
             .putInt(CompilationWorker.KEY_SCAN_MODE, requestedScanMode.ordinal)
             .putLong(CompilationWorker.KEY_CHECKPOINT_INTERVAL_MS, scanProfile.frameStepMs)
             .putInt(CompilationWorker.KEY_EXPERIMENTAL_DOWNSCALE, selectedExperimentalDownscaleSize())
@@ -677,17 +741,81 @@ class MainActivity : AppCompatActivity() {
             .putInt(CompilationWorker.KEY_FORMAT_ORDINAL, format.ordinal)
             .putInt(CompilationWorker.KEY_TRANSITION_STYLE_ORDINAL, transitionStyle.ordinal)
             .putInt(CompilationWorker.KEY_VIDEO_ROTATION, selectedVideoRotationDegrees)
+            .putString(CompilationJobContract.KEY_EXPECTED_OUTPUT_PATH, expectedOutput.absolutePath)
             .build()
 
         val request = OneTimeWorkRequestBuilder<CompilationWorker>()
             .setInputData(inputData)
             .build()
 
-        compilationWorkId = request.id
-        clearProgressNotification()
-        compileWorkPrefs.edit().putString("active_work_id", request.id.toString()).apply()
-        observeCompilationWork(request.id)
-        workManager.enqueueUniqueWork(compilationWorkName, ExistingWorkPolicy.KEEP, request)
+        val now = System.currentTimeMillis()
+        val record = CompilationJobRecord(
+            workId = request.id.toString(),
+            uniqueWorkName = compilationWorkName,
+            sourceUri = uri.toString(),
+            expectedOutputPath = expectedOutput.absolutePath,
+            state = CompilationPipelineState.QUEUED,
+            stage = "queued",
+            progressPercent = 0,
+            progressMessage = "Compilation queued",
+            createdAtMs = now,
+            updatedAtMs = now,
+            outputUri = compilationContentUri(expectedOutput).toString(),
+            settings = CompilationJobSettings(
+                scanWindowJson = scanWindowJson,
+                scanModeOrdinal = requestedScanMode.ordinal,
+                checkpointIntervalMs = scanProfile.frameStepMs,
+                experimentalDownscale = selectedExperimentalDownscaleSize(),
+                qualityOrdinal = quality.ordinal,
+                formatOrdinal = format.ordinal,
+                transitionStyleOrdinal = transitionStyle.ordinal,
+                videoRotation = selectedVideoRotationDegrees
+            )
+        )
+        if (!compilationJobStore.save(record)) {
+            expectedOutput.delete()
+            throw IllegalStateException("Could not persist compilation job before enqueue")
+        }
+        currentPipelineState = CompilationPipelineState.QUEUED
+        emitCompilationProgress(
+            "Starting ${if (requestedScanMode == ScanMode.Experimental) "Experimental" else "Fast"} change-map scan " +
+                "(${scanProfile.label}) and preparing output...",
+            0
+        )
+
+        val accepted = withContext(Dispatchers.IO) {
+            workManager.enqueueUniqueWork(compilationWorkName, ExistingWorkPolicy.KEEP, request).result.get()
+            val unique = workManager.getWorkInfosForUniqueWork(compilationWorkName).get()
+            unique.firstOrNull { isActiveWorkManagerState(it.state) }
+                ?: workManager.getWorkInfoById(request.id).get()
+        } ?: throw IllegalStateException("WorkManager did not retain the queued compilation")
+
+        if (accepted.id != request.id) {
+            expectedOutput.delete()
+            val acceptedRecord = previousRecord?.takeIf { it.workId == accepted.id.toString() }
+                ?: record.copy(
+                    workId = accepted.id.toString(),
+                    expectedOutputPath = "",
+                    outputUri = "",
+                    stage = "metadata recovery",
+                    progressMessage = "Attached to existing unique work; original output metadata was unavailable",
+                    errorStage = "metadata recovery",
+                    errorMessage = "KEEP retained a different WorkRequest"
+                )
+            compilationJobStore.save(acceptedRecord)
+            AppLog.w(
+                this@MainActivity,
+                logTag,
+                "KEEP attached existing UUID=${accepted.id}; generated UUID=${request.id} was not accepted"
+            )
+        }
+        AppLog.i(
+            this@MainActivity,
+            logTag,
+            "work UUID=${accepted.id} unique work name=$compilationWorkName enqueue policy=KEEP " +
+                "previous job state=${previousRecord?.state ?: "none"} new job state=${accepted.state} cancellation reason=none"
+        )
+        attachToCompilationWork(accepted, compilationJobStore.load())
     }
 
     private val selectedScanWindow: ScanWindow
@@ -706,54 +834,204 @@ class MainActivity : AppCompatActivity() {
     private fun observeCompilationWork(workId: UUID) {
         dismissCompilationWorkObserver()
         activeWorkObserver = Observer { workInfo ->
-            if (workInfo == null) return@Observer
-            when (workInfo.state) {
-                WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING -> {
-                    val data = workInfo.progress
-                    val phase = data.getString(CompilationWorker.KEY_PROGRESS_PHASE) ?: "processing"
-                    val percent = data.getInt(CompilationWorker.KEY_PROGRESS_PERCENT, 0)
-                    val message = data.getString(CompilationWorker.KEY_PROGRESS_MESSAGE) ?: "Compilation ${phase}"
-                    emitProgress("$phase: $message", percent)
-                    isBusy = true
-                    setUiBusy(true)
+            if (workInfo == null) {
+                compilationJobStore.load()?.takeIf { it.workId == workId.toString() && it.state.isActive }?.let {
+                    handleMissingWorkInfo(it)
                 }
-                WorkInfo.State.SUCCEEDED -> {
-                    val outputPath = workInfo.outputData.getString(CompilationWorker.KEY_OUTPUT_PATH).orEmpty()
-                    val outputFormat = exportFormatFromOrdinal(
-                        workInfo.outputData.getInt(CompilationWorker.KEY_FORMAT_ORDINAL, ExportFormat.Mp4.ordinal)
-                    )
-                    val scanReportPath = workInfo.outputData.getString(CompilationWorker.KEY_REPORT_PATH)
-                    val fallbackUsed = workInfo.outputData.getBoolean(CompilationWorker.KEY_FALLBACK_USED, false)
-                    emitProgress("Compilation finished. report=$scanReportPath", 100)
-                    if (fallbackUsed) {
-                        emitProgress("Experimental scan failed; stable checkpoint scan was used.", 100)
-                    }
-                    if (outputPath.isNotBlank()) {
-                        val output = File(outputPath)
-                        if (output.exists()) {
-                            showPendingCompilationPreview(output, outputFormat)
-                            emitProgress("Preview ready for save/discard.", 100)
-                        } else {
-                            emitProgress("Compilation output path invalid: $outputPath", 100)
-                        }
-                    } else {
-                        emitProgress("Compilation finished without output path.", 100)
-                    }
-                    finalizeCompilationWork(workId = workId, clearBusy = true)
-                }
-                WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
-                    val failureReason = workInfo.outputData.getString(CompilationWorker.KEY_ERROR_MESSAGE)
-                        ?: "Compilation ${workInfo.state.name.lowercase()}"
-                    emitProgress("Compilation failed: $failureReason", 100)
-                    finalizeCompilationWork(workId = workId, clearBusy = true)
-                }
-                else -> {
-                    finalizeCompilationWork(workId = workId, clearBusy = true)
-                }
+                return@Observer
             }
+            handleCompilationWorkInfo(workInfo)
         }
         activeWorkInfoLiveData = workManager.getWorkInfoByIdLiveData(workId)
         activeWorkInfoLiveData?.observe(this, activeWorkObserver!!)
+    }
+
+    private fun attachToCompilationWork(workInfo: WorkInfo, savedRecord: CompilationJobRecord?) {
+        val existing = savedRecord?.takeIf { it.workId == workInfo.id.toString() }
+        val now = System.currentTimeMillis()
+        val recovered = existing ?: CompilationJobRecord(
+            workId = workInfo.id.toString(),
+            uniqueWorkName = compilationWorkName,
+            sourceUri = savedRecord?.sourceUri.orEmpty(),
+            expectedOutputPath = savedRecord?.expectedOutputPath.orEmpty(),
+            state = if (isActiveWorkManagerState(workInfo.state)) CompilationPipelineState.QUEUED else CompilationPipelineState.IDLE,
+            stage = "work recovery",
+            progressPercent = savedRecord?.progressPercent ?: 0,
+            progressMessage = "Recovered WorkManager job ${workInfo.id}",
+            createdAtMs = savedRecord?.createdAtMs?.takeIf { it > 0L } ?: now,
+            updatedAtMs = now,
+            settings = savedRecord?.settings ?: CompilationJobSettings(),
+            errorStage = if (savedRecord == null) "metadata recovery" else "",
+            errorMessage = if (savedRecord == null) "Persisted job metadata was missing; attached by unique work name" else ""
+        )
+        compilationJobStore.save(recovered)
+        currentPipelineState = recovered.state
+        compilationWorkId = workInfo.id
+        latestWorkManagerState = workInfo.state
+        clearProgressNotification()
+        observeCompilationWork(workInfo.id)
+        handleCompilationWorkInfo(workInfo)
+    }
+
+    private fun handleCompilationWorkInfo(workInfo: WorkInfo) {
+        latestWorkManagerState = workInfo.state
+        when (workInfo.state) {
+            WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING, WorkInfo.State.BLOCKED -> {
+                val data = workInfo.progress
+                val phase = data.getString(CompilationWorker.KEY_PROGRESS_PHASE)
+                    ?: if (workInfo.state == WorkInfo.State.BLOCKED) "queued" else "preparing"
+                val percent = data.getInt(
+                    CompilationWorker.KEY_PROGRESS_PERCENT,
+                    compilationJobStore.load()?.progressPercent ?: 0
+                )
+                val message = data.getString(CompilationWorker.KEY_PROGRESS_MESSAGE)
+                    ?: if (workInfo.state == WorkInfo.State.BLOCKED) {
+                        "Compilation is waiting for WorkManager prerequisites"
+                    } else {
+                        "Compilation $phase"
+                    }
+                val explicitState = data.getString(CompilationJobContract.KEY_PIPELINE_STATE)?.let { raw ->
+                    runCatching { CompilationPipelineState.valueOf(raw) }.getOrNull()
+                }
+                val nextState = explicitState ?: pipelineStateForProgressPhase(phase, currentPipelineState.takeIf { it.isActive }
+                    ?: CompilationPipelineState.PREPARING)
+                currentPipelineState = nextState
+                compilationJobStore.updateState(workInfo.id.toString(), nextState, phase, message, percent)
+                emitCompilationProgress("$phase: $message", percent)
+                isBusy = true
+                setUiBusy(true)
+            }
+            WorkInfo.State.SUCCEEDED -> handleSucceededCompilation(workInfo)
+            WorkInfo.State.FAILED -> handleFailedCompilation(workInfo)
+            WorkInfo.State.CANCELLED -> handleCancelledCompilation(workInfo)
+        }
+    }
+
+    private fun handleSucceededCompilation(workInfo: WorkInfo) {
+        if (terminalHandlingWorkId == workInfo.id) return
+        terminalHandlingWorkId = workInfo.id
+        dismissCompilationWorkObserver()
+        lifecycleScope.launch {
+            val saved = compilationJobStore.load()
+            val outputPath = workInfo.outputData.getString(CompilationWorker.KEY_OUTPUT_PATH)
+                .orEmpty().ifBlank { saved?.expectedOutputPath.orEmpty() }
+            val outputUri = workInfo.outputData.getString(CompilationJobContract.KEY_OUTPUT_URI)
+                .orEmpty().ifBlank { saved?.outputUri.orEmpty() }
+            val outputFormat = exportFormatFromOrdinal(
+                workInfo.outputData.getInt(
+                    CompilationWorker.KEY_FORMAT_ORDINAL,
+                    saved?.settings?.formatOrdinal ?: ExportFormat.Mp4.ordinal
+                )
+            )
+            val verified = withContext(Dispatchers.IO) { verifyCompilationOutput(outputPath, outputUri) }
+            if (verified == null) {
+                val message = "Worker reported success but the output is missing or not a readable video"
+                compilationJobStore.update(workInfo.id.toString()) { record ->
+                    record.copy(
+                        state = CompilationPipelineState.FAILED,
+                        stage = "output verification",
+                        progressPercent = 100,
+                        progressMessage = message,
+                        completedAtMs = System.currentTimeMillis(),
+                        errorStage = "output verification",
+                        errorType = "InvalidOutput",
+                        errorMessage = message,
+                        previewAvailable = false
+                    )
+                }
+                currentPipelineState = CompilationPipelineState.FAILED
+                emitCompilationProgress("Compilation failed during output verification: $message", 100)
+                finalizeCompilationWork(workInfo.id, clearBusy = true)
+                return@launch
+            }
+
+            val completed = compilationJobStore.update(workInfo.id.toString()) { record ->
+                record.copy(
+                    state = CompilationPipelineState.SUCCEEDED,
+                    stage = "succeeded",
+                    progressPercent = 100,
+                    progressMessage = "Compilation complete",
+                    completedAtMs = System.currentTimeMillis(),
+                    outputUri = verified.uri.toString(),
+                    outputPath = verified.file.absolutePath,
+                    outputSizeBytes = verified.sizeBytes,
+                    outputDurationMs = verified.durationMs,
+                    previewAvailable = true,
+                    errorStage = "",
+                    errorType = "",
+                    errorMessage = ""
+                )
+            }
+            currentPipelineState = CompilationPipelineState.SUCCEEDED
+            showPendingCompilationPreview(verified.file, outputFormat, verified.uri)
+            emitCompilationProgress(
+                "Compilation complete: ${formatBytes(verified.sizeBytes)}, ${formatDurationMs(verified.durationMs)}",
+                100
+            )
+            AppLog.i(this@MainActivity, logTag, "Restored output URI=${completed?.outputUri} size=${verified.sizeBytes} durationMs=${verified.durationMs}")
+            finalizeCompilationWork(workInfo.id, clearBusy = true)
+        }
+    }
+
+    private fun handleFailedCompilation(workInfo: WorkInfo) {
+        val noResults = workInfo.outputData.getBoolean(CompilationWorker.KEY_NO_TRANSITIONS_DETECTED, false)
+        val stage = workInfo.outputData.getString(CompilationJobContract.KEY_ERROR_STAGE) ?: "worker"
+        val errorType = workInfo.outputData.getString(CompilationJobContract.KEY_ERROR_TYPE) ?: "CompilationFailure"
+        val reason = workInfo.outputData.getString(CompilationWorker.KEY_ERROR_MESSAGE)
+            ?: if (noResults) "No transitions detected before scan budget expired" else "Compilation failed"
+        val terminalState = if (noResults) CompilationPipelineState.NO_RESULTS else CompilationPipelineState.FAILED
+        currentPipelineState = terminalState
+        compilationJobStore.update(workInfo.id.toString()) { record ->
+            record.copy(
+                state = terminalState,
+                stage = stage,
+                progressPercent = 100,
+                progressMessage = reason,
+                completedAtMs = System.currentTimeMillis(),
+                errorStage = stage,
+                errorType = errorType,
+                errorMessage = reason,
+                previewAvailable = false
+            )
+        }
+        emitCompilationProgress(
+            if (noResults) "No results: $reason" else "Compilation failed at $stage: $reason",
+            100
+        )
+        finalizeCompilationWork(workInfo.id, clearBusy = true)
+    }
+
+    private fun handleCancelledCompilation(workInfo: WorkInfo) {
+        val expected = compilationJobStore.load()?.expectedOutputPath.orEmpty()
+        if (expected.isNotBlank()) {
+            val partial = File(expected)
+            if (partial.exists()) {
+                runCatching { check(partial.delete()) { "Unable to delete partial output ${partial.absolutePath}" } }
+                    .onFailure { AppLog.w(this, logTag, "Cancelled-output cleanup failed", it) }
+            }
+        }
+        AppLog.i(
+            this,
+            logTag,
+            "work UUID=${workInfo.id} unique work name=$compilationWorkName enqueue policy=KEEP " +
+                "previous job state=${compilationJobStore.load()?.state ?: "unknown"} new job state=CANCELLED cancellation reason=user/notification"
+        )
+        currentPipelineState = CompilationPipelineState.CANCELLED
+        compilationJobStore.update(workInfo.id.toString()) { record ->
+            record.copy(
+                state = CompilationPipelineState.CANCELLED,
+                stage = "cancelled",
+                progressPercent = record.progressPercent,
+                progressMessage = "Compilation cancelled",
+                completedAtMs = System.currentTimeMillis(),
+                errorStage = "",
+                errorType = "",
+                errorMessage = "",
+                previewAvailable = false
+            )
+        }
+        emitCompilationProgress("Compilation cancelled", compilationJobStore.load()?.progressPercent ?: 0)
+        finalizeCompilationWork(workInfo.id, clearBusy = true)
     }
 
     private fun finalizeCompilationWork(workId: UUID, clearBusy: Boolean) {
@@ -765,8 +1043,8 @@ class MainActivity : AppCompatActivity() {
         }
         if (compilationWorkId == workId) {
             compilationWorkId = null
-            compileWorkPrefs.edit().remove("active_work_id").apply()
         }
+        terminalHandlingWorkId = null
     }
 
     private fun dismissCompilationWorkObserver() {
@@ -778,23 +1056,307 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restoreActiveCompilationWork() {
-        val existingId = compileWorkPrefs.getString("active_work_id", null) ?: return
-        val parsed = runCatching { UUID.fromString(existingId) }.getOrNull() ?: return
+        if (compilationRestoreInFlight) return
+        compilationRestoreInFlight = true
         lifecycleScope.launch {
-            val status = withContext(Dispatchers.IO) {
-                workManager.getWorkInfoById(parsed).get()
+            try {
+                val saved = compilationJobStore.load() ?: compilationJobStore.loadLastSuccess()
+                val parsed = saved?.workId?.takeIf { it.isNotBlank() }?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                val status = withContext(Dispatchers.IO) {
+                    val byId = parsed?.let { workManager.getWorkInfoById(it).get() }
+                    byId ?: workManager.getWorkInfosForUniqueWork(compilationWorkName).get()
+                        .firstOrNull { isActiveWorkManagerState(it.state) }
+                }
+
+                saved?.let { restoreSavedJobSelection(it) }
+                when {
+                    status != null -> attachToCompilationWork(status, saved)
+                    saved == null -> {
+                        currentPipelineState = CompilationPipelineState.IDLE
+                        latestWorkManagerState = null
+                        setUiBusy(false)
+                    }
+                    saved.state.isActive -> handleMissingWorkInfo(saved)
+                    else -> restorePersistedTerminalOrDraft(saved)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                recordHandledWorkerFailure(this@MainActivity, logTag, "Compilation state restoration failed", failure)
+                emitTransientStatus("Could not restore compilation state: ${failure.message ?: failure::class.java.simpleName}")
+            } finally {
+                compilationRestoreInFlight = false
             }
-            if (status == null || status.state == WorkInfo.State.SUCCEEDED || status.state == WorkInfo.State.FAILED || status.state == WorkInfo.State.CANCELLED) {
-                compileWorkPrefs.edit().remove("active_work_id").apply()
+        }
+    }
+
+    private fun hasActiveCompilation(): Boolean {
+        return isActiveWorkManagerState(latestWorkManagerState) ||
+            currentPipelineState.isActive ||
+            compilationJobStore.load()?.state?.isActive == true
+    }
+
+    private fun canInitializeRoiUi(): Boolean {
+        return shouldInitializeRoi(compilationJobStore.load()?.state ?: currentPipelineState, latestWorkManagerState)
+    }
+
+    private fun currentJobSettings(): CompilationJobSettings {
+        val profile = selectedCheckpointProfile()
+        val mode = if (experimentalModeSwitch.isChecked) ScanMode.Experimental else profile.mode
+        return CompilationJobSettings(
+            scanWindowJson = JSONObject().apply {
+                val window = readScanWindow()
+                put("xPercent", window.xPercent)
+                put("yPercent", window.yPercent)
+                put("widthPercent", window.widthPercent)
+                put("heightPercent", window.heightPercent)
+            }.toString(),
+            scanModeOrdinal = mode.ordinal,
+            checkpointIntervalMs = profile.frameStepMs,
+            experimentalDownscale = selectedExperimentalDownscaleSize(),
+            qualityOrdinal = qualitySpinner.selectedItemPosition.coerceIn(0, qualityOptions.lastIndex),
+            formatOrdinal = formatSpinner.selectedItemPosition.coerceIn(0, formatOptions.lastIndex),
+            transitionStyleOrdinal = transitionStyleSpinner.selectedItemPosition.coerceIn(0, transitionStyleOptions.lastIndex),
+            videoRotation = selectedVideoRotationDegrees
+        )
+    }
+
+    private fun persistDraftState(state: CompilationPipelineState, message: String) {
+        if (compilationJobStore.load()?.state?.isActive == true) return
+        val now = System.currentTimeMillis()
+        compilationJobStore.save(
+            CompilationJobRecord(
+                workId = "",
+                uniqueWorkName = compilationWorkName,
+                sourceUri = selectedVideoUri?.toString().orEmpty(),
+                expectedOutputPath = "",
+                state = state,
+                stage = state.name.lowercase(),
+                progressPercent = 0,
+                progressMessage = message,
+                createdAtMs = now,
+                updatedAtMs = now,
+                settings = currentJobSettings()
+            )
+        )
+        currentPipelineState = state
+        latestWorkManagerState = null
+    }
+
+    private fun createExpectedCompilationOutput(format: ExportFormat): File {
+        val directory = File(filesDir, "compilations").apply {
+            if (!exists() && !mkdirs()) throw IllegalStateException("Could not create compilation output directory")
+        }
+        val safeFormat = if (format == ExportFormat.Webm) ExportFormat.Mp4 else format
+        return File(directory, "compilation-${System.currentTimeMillis()}-${UUID.randomUUID()}.${safeFormat.extension}")
+    }
+
+    private fun compilationContentUri(file: File): Uri = FileProvider.getUriForFile(
+        this,
+        "$packageName.updateprovider",
+        file
+    )
+
+    private data class ActivityVerifiedOutput(
+        val file: File,
+        val uri: Uri,
+        val sizeBytes: Long,
+        val durationMs: Long
+    )
+
+    private fun verifyCompilationOutput(outputPath: String, outputUri: String): ActivityVerifiedOutput? {
+        val file = outputPath.takeIf { it.isNotBlank() }?.let(::File)
+            ?: outputUri.takeIf { it.startsWith("file:") }?.let { File(Uri.parse(it).path.orEmpty()) }
+            ?: return null
+        if (!file.exists() || !file.isFile || !file.canRead() || file.length() <= 0L) return null
+        val uri = runCatching {
+            outputUri.takeIf { it.isNotBlank() }?.let(Uri::parse)?.takeIf { candidate ->
+                candidate.scheme == ContentResolver.SCHEME_CONTENT && runCatching {
+                    contentResolver.openInputStream(candidate).use { input -> input != null && input.read() >= 0 }
+                }.getOrDefault(false)
+            } ?: compilationContentUri(file)
+        }.getOrNull() ?: return null
+        val canOpen = runCatching {
+            contentResolver.openInputStream(uri).use { input -> input != null && input.read() >= 0 }
+        }.getOrDefault(false)
+        if (!canOpen) return null
+
+        val retriever = MediaMetadataRetriever()
+        val extractor = MediaExtractor()
+        val durationMs = try {
+            retriever.setDataSource(file.absolutePath)
+            val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            extractor.setDataSource(file.absolutePath)
+            val hasVideo = (0 until extractor.trackCount).any { trackIndex ->
+                extractor.getTrackFormat(trackIndex).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+            }
+            if (!hasVideo) return null
+            duration
+        } catch (failure: Exception) {
+            recordHandledWorkerFailure(this, logTag, "Saved compilation output verification failed", failure)
+            return null
+        } finally {
+            runCatching { retriever.release() }
+                .onFailure { AppLog.w(this, logTag, "Output retriever cleanup failed", it) }
+            runCatching { extractor.release() }
+                .onFailure { AppLog.w(this, logTag, "Output extractor cleanup failed", it) }
+        }
+        if (durationMs <= 0L) return null
+        return ActivityVerifiedOutput(file, uri, file.length(), durationMs)
+    }
+
+    private fun restoreSavedJobSelection(record: CompilationJobRecord) {
+        val settings = record.settings
+        if (record.sourceUri.isNotBlank()) {
+            selectedVideoUri = runCatching { Uri.parse(record.sourceUri) }.getOrNull()
+            binding.selectedVideo.text = record.sourceUri
+        }
+        selectedVideoRotationDegrees = settings.videoRotation
+        qualitySpinner.setSelection(settings.qualityOrdinal.coerceIn(0, qualityOptions.lastIndex), false)
+        formatSpinner.setSelection(settings.formatOrdinal.coerceIn(0, formatOptions.lastIndex), false)
+        transitionStyleSpinner.setSelection(settings.transitionStyleOrdinal.coerceIn(0, transitionStyleOptions.lastIndex), false)
+        checkpointProfiles.indexOfFirst {
+            it.frameStepMs == settings.checkpointIntervalMs && it.mode.ordinal == settings.scanModeOrdinal
+        }.takeIf { it >= 0 }?.let { scanSpeedSpinner.setSelection(it, false) }
+        experimentalModeSwitch.isChecked = settings.scanModeOrdinal == ScanMode.Experimental.ordinal
+        experimentalDownscaleOptions.indexOf(settings.experimentalDownscale).takeIf { it >= 0 }
+            ?.let { experimentalDownscaleSpinner.setSelection(it, false) }
+        runCatching {
+            val json = JSONObject(settings.scanWindowJson)
+            setScanAreaFromPercents(
+                json.optDouble("xPercent", defaultScanWindow.xPercent.toDouble()).toFloat(),
+                json.optDouble("yPercent", defaultScanWindow.yPercent.toDouble()).toFloat(),
+                json.optDouble("widthPercent", defaultScanWindow.widthPercent.toDouble()).toFloat(),
+                json.optDouble("heightPercent", defaultScanWindow.heightPercent.toDouble()).toFloat()
+            )
+        }
+    }
+
+    private fun restorePersistedTerminalOrDraft(record: CompilationJobRecord) {
+        currentPipelineState = record.state
+        latestWorkManagerState = null
+        when (record.state) {
+            CompilationPipelineState.SUCCEEDED -> restoreSuccessfulRecord(record)
+            CompilationPipelineState.FAILED -> {
+                emitCompilationProgress(
+                    "Compilation failed at ${record.errorStage.ifBlank { record.stage }}: ${record.errorMessage.ifBlank { record.progressMessage }}",
+                    100
+                )
+                setUiBusy(false)
+                isBusy = false
+            }
+            CompilationPipelineState.CANCELLED -> {
+                emitCompilationProgress("Compilation cancelled", record.progressPercent)
+                setUiBusy(false)
+                isBusy = false
+            }
+            CompilationPipelineState.NO_RESULTS -> {
+                emitCompilationProgress(
+                    record.errorMessage.ifBlank { "No transitions detected before scan budget expired" },
+                    100
+                )
+                setUiBusy(false)
+                isBusy = false
+            }
+            else -> {
+                setUiBusy(false)
+                isBusy = false
+                emitRoiStatus(record.progressMessage.ifBlank { "ROI setup ready" })
+                val source = selectedVideoUri
+                if (source != null && canInitializeRoiUi()) setupVideoPreview(source)
+            }
+        }
+    }
+
+    private fun restoreSuccessfulRecord(record: CompilationJobRecord) {
+        lifecycleScope.launch {
+            val verified = withContext(Dispatchers.IO) {
+                verifyCompilationOutput(record.outputPath.ifBlank { record.expectedOutputPath }, record.outputUri)
+            }
+            if (verified == null) {
+                val message = "Saved compilation output is missing or unreadable"
+                compilationJobStore.update(record.workId) { saved ->
+                    saved.copy(
+                        state = CompilationPipelineState.FAILED,
+                        stage = "output restoration",
+                        progressMessage = message,
+                        errorStage = "output restoration",
+                        errorType = "MissingOutput",
+                        errorMessage = message,
+                        previewAvailable = false,
+                        completedAtMs = System.currentTimeMillis()
+                    )
+                }
+                currentPipelineState = CompilationPipelineState.FAILED
+                emitCompilationProgress("Compilation output unavailable: $message", 100)
+                setUiBusy(false)
                 return@launch
             }
-            compilationWorkId = parsed
-            clearProgressNotification()
-            runOnUiThread {
-                emitProgress("Resuming tracked background compilation", 0)
+            val format = exportFormatFromOrdinal(record.settings.formatOrdinal)
+            showPendingCompilationPreview(verified.file, format, verified.uri)
+            compilationJobStore.update(record.workId) { saved ->
+                saved.copy(
+                    outputPath = verified.file.absolutePath,
+                    outputUri = verified.uri.toString(),
+                    outputSizeBytes = verified.sizeBytes,
+                    outputDurationMs = verified.durationMs,
+                    previewAvailable = true
+                )
             }
-            observeCompilationWork(parsed)
-            emitProgress("Resuming background compilation", 1)
+            emitCompilationProgress(
+                "Compilation complete: ${formatBytes(verified.sizeBytes)}, ${formatDurationMs(verified.durationMs)}",
+                100
+            )
+            setUiBusy(false)
+            isBusy = false
+        }
+    }
+
+    private fun handleMissingWorkInfo(record: CompilationJobRecord) {
+        if (!record.state.isActive) return
+        dismissCompilationWorkObserver()
+        compilationWorkId = null
+        latestWorkManagerState = null
+        lifecycleScope.launch {
+            val verified = withContext(Dispatchers.IO) {
+                verifyCompilationOutput(record.outputPath.ifBlank { record.expectedOutputPath }, record.outputUri)
+            }
+            if (verified != null) {
+                val recovered = record.copy(
+                    state = CompilationPipelineState.SUCCEEDED,
+                    stage = "recovered output",
+                    progressPercent = 100,
+                    progressMessage = "WorkManager history missing; verified completed output",
+                    completedAtMs = System.currentTimeMillis(),
+                    outputPath = verified.file.absolutePath,
+                    outputUri = verified.uri.toString(),
+                    outputSizeBytes = verified.sizeBytes,
+                    outputDurationMs = verified.durationMs,
+                    previewAvailable = true
+                )
+                compilationJobStore.save(recovered)
+                currentPipelineState = CompilationPipelineState.SUCCEEDED
+                restoreSuccessfulRecord(recovered)
+                return@launch
+            }
+            val reason = "WorkManager no longer has job ${record.workId}; persisted metadata was retained and no verified output exists"
+            compilationJobStore.save(
+                record.copy(
+                    state = CompilationPipelineState.FAILED,
+                    stage = "work lookup",
+                    progressMessage = reason,
+                    completedAtMs = System.currentTimeMillis(),
+                    errorStage = "work lookup",
+                    errorType = "MissingWorkInfo",
+                    errorMessage = reason,
+                    previewAvailable = false,
+                    updatedAtMs = System.currentTimeMillis()
+                )
+            )
+            currentPipelineState = CompilationPipelineState.FAILED
+            emitCompilationProgress("Compilation state unavailable: $reason", 100)
+            setUiBusy(false)
+            isBusy = false
         }
     }
 
@@ -805,6 +1367,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupVideoPreview(uri: Uri) {
+        if (!canInitializeRoiUi()) {
+            emitRoiStatus("ROI preview is paused while compilation state is ${currentPipelineState.name}")
+            return
+        }
         frameContainer.visibility = View.VISIBLE
         roiOverlay.visibility = View.GONE
         previewBitmap?.recycle()
@@ -822,11 +1388,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun captureFrame(positionMs: Int) {
+        if (!canInitializeRoiUi()) {
+            emitRoiStatus("ROI frame capture skipped while compilation state is ${currentPipelineState.name}")
+            return
+        }
         val source = selectedVideoUri ?: return
         val duration = max(1, previewSeekBar.max)
         val safePosition = positionMs.coerceIn(0, duration)
         lifecycleScope.launch {
-            emitProgress("Capturing frame for ROI at ${safePosition}ms", 5)
+            if (!canInitializeRoiUi()) return@launch
+            persistDraftState(CompilationPipelineState.ROI_SELECTION, "Capturing ROI frame")
+            emitRoiStatus("Capturing frame for ROI at ${safePosition}ms")
             val frame = withContext(Dispatchers.IO) {
                 val retriever = MediaMetadataRetriever()
                 val targetWidth = max(640, frameImage.width).coerceAtMost(1280)
@@ -853,8 +1425,13 @@ class MainActivity : AppCompatActivity() {
                     retriever.release()
                 }
             }
+            if (!canInitializeRoiUi()) {
+                frame?.recycle()
+                AppLog.i(this@MainActivity, logTag, "ROI frame result discarded because compilation became active")
+                return@launch
+            }
             if (frame == null) {
-                emitProgress("Unable to capture frame for ROI", 5)
+                emitRoiStatus("Unable to capture frame for ROI")
                 return@launch
             }
             val normalizedFrame = normalizeBitmapForRoi(frame, selectedVideoRotationDegrees)
@@ -867,7 +1444,8 @@ class MainActivity : AppCompatActivity() {
             selectedPreviewMs = safePosition
             roiOverlay.visibility = View.VISIBLE
             updateRoiOverlay()
-            emitProgress("Captured frame. Tap within frame to place ROI center.", 6)
+            persistDraftState(CompilationPipelineState.READY, "ROI frame captured")
+            emitRoiStatus("Captured frame. Tap within frame to place ROI center.")
         }
     }
 
@@ -980,9 +1558,14 @@ class MainActivity : AppCompatActivity() {
         previewHandler.removeCallbacks(compilationPreviewProgressUpdater)
     }
 
-    private fun showPendingCompilationPreview(file: File, format: ExportFormat) {
+    private fun showPendingCompilationPreview(
+        file: File,
+        format: ExportFormat,
+        uri: Uri = compilationContentUri(file)
+    ) {
         pendingCompilationFile = file
         pendingCompilationFormat = format
+        pendingCompilationUri = uri
         binding.compilationPreviewContainer.visibility = View.VISIBLE
         compilationPreviewSeekBar.isEnabled = false
         compilationPreviewSeekBar.progress = 0
@@ -991,7 +1574,9 @@ class MainActivity : AppCompatActivity() {
         playCompilationPreviewButton.isEnabled = true
         saveCompilationButton.isEnabled = true
         discardCompilationButton.isEnabled = true
-        compilationPreview.setVideoURI(Uri.fromFile(file))
+        shareCompilationButton.isEnabled = true
+        openCompilationButton.isEnabled = true
+        compilationPreview.setVideoURI(uri)
         compilationPreview.seekTo(0)
         compilationPreview.pause()
     }
@@ -1004,18 +1589,60 @@ class MainActivity : AppCompatActivity() {
         }
         pendingCompilationFile = null
         pendingCompilationFormat = null
+        pendingCompilationUri = null
         selectedCompilationPreviewMs = 0
         compilationPreviewSeekBar.progress = 0
         compilationPreviewSeekBar.isEnabled = false
         playCompilationPreviewButton.text = "Play"
+        shareCompilationButton.isEnabled = false
+        openCompilationButton.isEnabled = false
         binding.compilationPreviewContainer.visibility = View.GONE
+    }
+
+    private fun sharePendingCompilation() {
+        val uri = pendingCompilationUri
+        val format = pendingCompilationFormat
+        if (uri == null || format == null) {
+            emitTransientStatus("No verified compilation is available to share.")
+            return
+        }
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = format.mimeType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            clipData = ClipData.newUri(contentResolver, "Compilation", uri)
+        }
+        runCatching { startActivity(Intent.createChooser(intent, "Share compilation")) }
+            .onFailure {
+                AppLog.w(this@MainActivity, logTag, "Could not share compilation", it)
+                emitTransientStatus("No app could share the compilation.")
+            }
+    }
+
+    private fun openPendingCompilation() {
+        val uri = pendingCompilationUri
+        val format = pendingCompilationFormat
+        if (uri == null || format == null) {
+            emitTransientStatus("No verified compilation is available to open.")
+            return
+        }
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, format.mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            clipData = ClipData.newUri(contentResolver, "Compilation", uri)
+        }
+        runCatching { startActivity(intent) }
+            .onFailure {
+                AppLog.w(this@MainActivity, logTag, "Could not open compilation", it)
+                emitTransientStatus("No video app could open the compilation.")
+            }
     }
 
     private fun savePendingCompilation() {
         val output = pendingCompilationFile
         val format = pendingCompilationFormat
         if (output == null || format == null) {
-            emitProgress("No compilation preview is ready to save.", 100)
+            emitTransientStatus("No compilation preview is ready to save.")
             return
         }
 
@@ -1023,16 +1650,16 @@ class MainActivity : AppCompatActivity() {
             isBusy = true
             setUiBusy(true)
             try {
+                var savedDestination = ""
                 val saveTiming = measureTimeMillis {
-                    val saved = saveToPhoneStorage(output, format)
-                    emitProgress("Saved: $saved", 100)
+                    savedDestination = saveToPhoneStorage(output, format)
                 }
-                emitProgress("Save timing (ms): save=$saveTiming", 100)
+                AppLog.i(this@MainActivity, logTag, "Saved compilation to $savedDestination in ${saveTiming}ms")
+                emitTransientStatus("Compilation saved to Movies/CompilationMaker")
                 Toast.makeText(this@MainActivity, "Export saved", Toast.LENGTH_LONG).show()
-                clearPendingCompilationPreview(deleteFile = true)
             } catch (e: Exception) {
                 AppLog.e(this@MainActivity, logTag, "Save failed", e)
-                emitProgress("Save failed: ${e.message ?: "failed"}", 100)
+                emitTransientStatus("Save failed: ${e.message ?: "failed"}")
             } finally {
                 isBusy = false
                 setUiBusy(false)
@@ -1065,7 +1692,7 @@ class MainActivity : AppCompatActivity() {
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastReportMs >= 300L) {
                     val savedPercent = ((bytes * 100L) / sourceLength).coerceIn(0L, 100L).toInt()
-                    emitProgress("Saving output: ${formatBytes(bytes)} / ${formatBytes(sourceLength)} ($savedPercent%)", 95 + savedPercent / 20)
+                    emitTransientStatus("Saving output: ${formatBytes(bytes)} / ${formatBytes(sourceLength)} ($savedPercent%)")
                     lastReportMs = now
                 }
             }
@@ -1125,7 +1752,7 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread {
             binding.processButton.isEnabled = !busy
             binding.selectButton.isEnabled = !busy
-            checkUpdatesButton.isEnabled = !busy
+            checkUpdatesButton.isEnabled = true
             qualitySpinner.isEnabled = !busy
             formatSpinner.isEnabled = !busy
             scanSpeedSpinner.isEnabled = !busy
@@ -1135,13 +1762,23 @@ class MainActivity : AppCompatActivity() {
             saveCompilationButton.isEnabled = !busy && pendingCompilationFile != null
             discardCompilationButton.isEnabled = !busy && pendingCompilationFile != null
             playCompilationPreviewButton.isEnabled = !busy && pendingCompilationFile != null
+            shareCompilationButton.isEnabled = !busy && pendingCompilationUri != null
+            openCompilationButton.isEnabled = !busy && pendingCompilationUri != null
+            val roiEnabled = !busy && canInitializeRoiUi()
+            captureFrameButton.isEnabled = roiEnabled && selectedVideoUri != null
+            refreshRoiButton.isEnabled = roiEnabled
+            previewSeekBar.isEnabled = roiEnabled && previewSeekBar.max > 0
+            scanAreaX.isEnabled = roiEnabled
+            scanAreaY.isEnabled = roiEnabled
+            scanAreaWidth.isEnabled = roiEnabled
+            scanAreaHeight.isEnabled = roiEnabled
             binding.progressBar.visibility = if (busy) ProgressBar.VISIBLE else ProgressBar.INVISIBLE
             progressPercentText.visibility = View.VISIBLE
             statusFeedScroll.visibility = View.VISIBLE
         }
     }
 
-    private fun emitProgress(message: String, percent: Int) {
+    private fun emitCompilationProgress(message: String, percent: Int) {
         val percentValue = percent.coerceIn(0, 100)
         val now = SystemClock.elapsedRealtime()
         if (percentValue == lastProgressPercent && message == lastProgressText && now - lastProgressUpdateMs < 250L) return
@@ -1156,6 +1793,36 @@ class MainActivity : AppCompatActivity() {
             addStatusLine(message)
         }
         updateProgressNotification(message, percentValue, percentValue < 100)
+    }
+
+    private fun emitRoiStatus(message: String) {
+        emitUiChannelStatus(CompilationUiChannel.ROI, message)
+    }
+
+    private fun emitUpdateStatus(message: String) {
+        emitUiChannelStatus(CompilationUiChannel.UPDATE, message)
+    }
+
+    private fun emitLogStatus(message: String) {
+        emitUiChannelStatus(CompilationUiChannel.LOG, message)
+    }
+
+    private fun emitTransientStatus(message: String) {
+        emitUiChannelStatus(CompilationUiChannel.TRANSIENT, message)
+    }
+
+    private fun emitUiChannelStatus(channel: CompilationUiChannel, message: String) {
+        check(!shouldWriteCompilationProgress(channel)) { "Compilation status must use emitCompilationProgress" }
+        AppLog.i(this, logTag, "${channel.name.lowercase()}: $message")
+        runOnUiThread {
+            when (channel) {
+                CompilationUiChannel.ROI -> binding.roiStatusText.text = message
+                CompilationUiChannel.UPDATE -> binding.updateStatusText.text = message
+                CompilationUiChannel.LOG -> addStatusLine("Log: $message")
+                CompilationUiChannel.TRANSIENT -> addStatusLine(message)
+                CompilationUiChannel.COMPILATION -> Unit
+            }
+        }
     }
 
     private fun ensureProgressNotificationChannel() {
@@ -1280,11 +1947,11 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Copy") { _, _ ->
                 val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
                 clipboard.setPrimaryClip(ClipData.newPlainText("CompilationMaker log", message))
-                emitProgress("Log copied to clipboard.", 100)
+                emitLogStatus("Log copied to clipboard.")
             }
             .setNeutralButton("Clear log") { _, _ ->
                 clearCrashReport(this)
-                emitProgress("Saved log cleared.", 100)
+                emitLogStatus("Saved log cleared.")
             }
             .setNegativeButton("Close", null)
             .show()
@@ -1367,13 +2034,12 @@ class MainActivity : AppCompatActivity() {
                 restoredWindow.widthPercent,
                 restoredWindow.heightPercent
             )
-            emitProgress(
+            emitRoiStatus(
                 "Loaded saved ROI for video (storedRotation=${savedRotation}°, currentRotation=${selectedVideoRotationDegrees}°)",
-                1
             )
         } catch (e: Exception) {
             AppLog.w(this@MainActivity, logTag, "Failed to restore ROI metadata", e)
-            emitProgress("Saved ROI metadata was unavailable. Using defaults.", 1)
+            emitRoiStatus("Saved ROI metadata was unavailable. Using defaults.")
         }
     }
 
@@ -1435,7 +2101,7 @@ class MainActivity : AppCompatActivity() {
             if (updates.isEmpty()) {
                 if (force) {
                     runOnUiThread {
-                        emitProgress("No update information found. Check connection and manifest URL.", 100)
+                        emitUpdateStatus("No update information found. Check connection and manifest URL.")
                     }
                 }
                 return@launch
@@ -1459,7 +2125,7 @@ class MainActivity : AppCompatActivity() {
             updatePrefs.edit().putString("notified_version", latest.versionName).apply()
             notifyUserOfUpdate(latest)
             runOnUiThread {
-                emitProgress("Update ${latest.versionName} available. Tap Check for updates to install.", 100)
+                emitUpdateStatus("Update ${latest.versionName} available. Tap Check for updates to install.")
             }
         }
     }
@@ -1475,7 +2141,7 @@ class MainActivity : AppCompatActivity() {
 
         if (downloadable.isEmpty()) {
             runOnUiThread {
-                emitProgress("No downloadable updates found in release feed.", 100)
+                emitUpdateStatus("No downloadable updates found in release feed.")
             }
             return
         }
@@ -1503,7 +2169,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 .setPositiveButton("Cancel", null)
                 .show()
-            emitProgress("Available updates: ${candidates.size}", 100)
+            emitUpdateStatus("Available updates: ${candidates.size}")
         }
     }
 
@@ -1555,23 +2221,23 @@ class MainActivity : AppCompatActivity() {
                 }
                 .setNegativeButton("Later", null)
                 .show()
-            emitProgress("Update ${info.versionName} available.", 100)
+            emitUpdateStatus("Update ${info.versionName} available.")
         }
     }
 
     private fun downloadAndInstallUpdate(info: UpdateInfo) {
         if (info.downloadUrl.isBlank()) {
-            emitProgress("Update APK link missing from manifest.", 100)
+            emitUpdateStatus("Update APK link missing from manifest.")
             return
         }
         lifecycleScope.launch {
-            emitProgress("Downloading update ${info.versionName} in the background...", 100)
+            emitUpdateStatus("Downloading update ${info.versionName} in the background...")
             val apk = withContext(Dispatchers.IO) { downloadUpdateApk(info) }
             if (apk == null) {
-                emitProgress("Update download failed.", 100)
+                emitUpdateStatus("Update download failed.")
                 return@launch
             }
-            emitProgress("Update downloaded. Opening Android installer.", 100)
+            emitUpdateStatus("Update downloaded. Opening Android installer.")
             installDownloadedApk(apk)
         }
     }
@@ -1648,7 +2314,7 @@ class MainActivity : AppCompatActivity() {
             startActivity(installIntent)
         } catch (e: Exception) {
             AppLog.w(this@MainActivity, logTag, "Unable to open Android package installer", e)
-            emitProgress("Could not open Android installer for downloaded update.", 100)
+            emitUpdateStatus("Could not open Android installer for downloaded update.")
         }
     }
 
@@ -1665,7 +2331,7 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("Cancel", null)
             .show()
-        emitProgress("Enable install permission, then check for updates again.", 100)
+        emitUpdateStatus("Enable install permission, then check for updates again.")
     }
 
     private fun ensureUpdateNotificationChannel() {
@@ -1705,7 +2371,7 @@ class MainActivity : AppCompatActivity() {
             parseReleaseToUpdateInfo(json)?.let { listOf(it) } ?: emptyList()
         } catch (_: Exception) {
             runOnUiThread {
-                emitProgress("Update check failed. Verify manifest and/or release endpoint settings.", 100)
+                emitUpdateStatus("Update check failed. Verify manifest and/or release endpoint settings.")
             }
             emptyList()
         }
@@ -1844,11 +2510,11 @@ class MainActivity : AppCompatActivity() {
             if (connection.responseCode !in 200..299) {
                 if (connection.responseCode == 404 && url.contains("/contents/")) {
                     runOnUiThread {
-                        emitProgress("Update manifest not found at app-update.json in your GitHub repo.", 100)
+                        emitUpdateStatus("Update manifest not found at app-update.json in your GitHub repo.")
                     }
                 } else if (connection.responseCode == 404 && url.contains("/releases/")) {
                     runOnUiThread {
-                        emitProgress("Release endpoint not found. Ensure releases are enabled for your repo.", 100)
+                        emitUpdateStatus("Release endpoint not found. Ensure releases are enabled for your repo.")
                     }
                 }
                 null
@@ -1863,12 +2529,21 @@ class MainActivity : AppCompatActivity() {
     }
 }
 
-class VideoCompilationEngine(private val context: Context) {
+class VideoCompilationEngine(private val context: Context) : AutoCloseable {
 
     private val digitRecognizer: DigitRecognizer = MlKitDigitRecognizer(context)
     private val tag = "CompilationEngine"
     var latestScanReportPath: String? = null
         private set
+
+    private companion object {
+        const val DECODER_STALL_TIMEOUT_MS = 30_000L
+        const val CANDIDATE_MERGE_TIMEOUT_MS = 10_000L
+        const val CLIP_PLAN_TIMEOUT_MS = 10_000L
+        const val SOURCE_PREPARATION_TIMEOUT_MS = 30_000L
+        const val EXPORT_TIMEOUT_MS = 30L * 60L * 1000L
+        const val VERIFY_TIMEOUT_MS = 30_000L
+    }
 
     suspend fun findNumberTransitionSegments(
         sourceUri: Uri,
@@ -1880,11 +2555,17 @@ class VideoCompilationEngine(private val context: Context) {
         transitionStyle: TransitionStyle,
         experimentalDownscaleSize: Int = 0,
         fallbackUsed: Boolean = false,
-        progress: (String, Int) -> Unit
+        progress: (CompilationPipelineState, String, Int) -> Unit
     ): ScanFindResult = withContext(Dispatchers.IO) {
         AppLog.d(context, tag, "Starting scan for number transitions: $sourceUri")
-        val retriever = android.media.MediaMetadataRetriever().apply {
-            setDataSource(context, sourceUri)
+        val retriever = android.media.MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(context, sourceUri)
+        } catch (failure: Exception) {
+            runCatching { retriever.release() }
+                .onFailure { AppLog.w(context, tag, "Source retriever cleanup failed", it) }
+            recordHandledWorkerFailure(context, tag, "[preparing] source setup failed", failure)
+            throw failure
         }
         val sourceWidth = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
         val sourceHeight = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
@@ -1964,7 +2645,7 @@ class VideoCompilationEngine(private val context: Context) {
             frameProvider = frameProviderSelection.provider
             frameProviderFallbackReason = frameProviderSelection.fallbackReason
             if (frameProviderSelection.fallbackReason != null) {
-                progress("Frame provider fallback: ${frameProviderSelection.fallbackReason}", 8)
+                progress(CompilationPipelineState.COARSE_SCAN, "Frame provider fallback: ${frameProviderSelection.fallbackReason}", 8)
             }
 
             val scanStartRealtime = SystemClock.elapsedRealtime()
@@ -1980,6 +2661,7 @@ class VideoCompilationEngine(private val context: Context) {
             val candidateWindows = ArrayList<TransitionCandidateWindow>()
             var coarseFramesSeen = 0
             var stopCoarseScan = false
+            var scanBudgetReached = false
             val coarseDecodeStart = SystemClock.elapsedRealtime()
             var previousSignature: RoiSignature? = null
             var msSinceLastCandidate = Long.MAX_VALUE
@@ -1996,14 +2678,19 @@ class VideoCompilationEngine(private val context: Context) {
             val transitionMarks = ArrayList<TransitionMark>()
             try {
                 frameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
-                    if (stopCoarseScan) return@forEachFrameInWindow
+                    if (stopCoarseScan) {
+                        decoded.bitmap.recycle()
+                        return@forEachFrameInWindow FrameIterationDecision.STOP
+                    }
                     if (SystemClock.elapsedRealtime() - scanStartRealtime >= scanConfig.totalScanBudgetMs) {
-                        progress("Scan budget reached. Finalizing from collected candidates", 43)
+                        scanBudgetReached = true
                         stopCoarseScan = true
-                        return@forEachFrameInWindow
+                        decoded.bitmap.recycle()
+                        return@forEachFrameInWindow FrameIterationDecision.STOP
                     }
                     if (!coroutineContext.isActive) {
-                        return@forEachFrameInWindow
+                        decoded.bitmap.recycle()
+                        coroutineContext.ensureActive()
                     }
 
                     val cursorMs = decoded.timeMs.coerceIn(0L, durationMs)
@@ -2011,6 +2698,7 @@ class VideoCompilationEngine(private val context: Context) {
                     val elapsedSeconds = String.format(Locale.US, "%.1f", cursorMs / 1000f)
                     val totalSeconds = String.format(Locale.US, "%.1f", durationMs / 1000f)
                     progress(
+                        CompilationPipelineState.COARSE_SCAN,
                         "Scanning timeline ${elapsedSeconds}s / ${totalSeconds}s (${percent}%, step ${currentStepMs}ms)",
                         percent
                     )
@@ -2101,27 +2789,40 @@ class VideoCompilationEngine(private val context: Context) {
                     }
 
                     coarseFramesSeen++
+                    FrameIterationDecision.CONTINUE
                 }
                 timing.decodeMs += SystemClock.elapsedRealtime() - coarseDecodeStart
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 if (frameProvider !== retrieverFrameProvider) {
+                    AppLog.w(context, tag, "MediaCodec coarse scan failed; falling back", e)
                     frameProviderFallbackReason = "MediaCodec coarse scan failed: ${e.message ?: e::class.java.simpleName}"
-                    progress("Frame provider fallback: $frameProviderFallbackReason", 10)
+                    progress(CompilationPipelineState.COARSE_SCAN, "Frame provider fallback: $frameProviderFallbackReason", 10)
                     frameProvider = retrieverFrameProvider
                     coarseFramesSeen = 0
                     val retryDecodeStart = SystemClock.elapsedRealtime()
                     frameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
                         if (SystemClock.elapsedRealtime() - scanStartRealtime >= scanConfig.totalScanBudgetMs) {
-                            progress("Scan budget reached. Finalizing from collected candidates", 43)
+                            scanBudgetReached = true
                             stopCoarseScan = true
-                            return@forEachFrameInWindow
+                            decoded.bitmap.recycle()
+                            return@forEachFrameInWindow FrameIterationDecision.STOP
                         }
-                        if (!coroutineContext.isActive || stopCoarseScan) return@forEachFrameInWindow
+                        if (!coroutineContext.isActive) {
+                            decoded.bitmap.recycle()
+                            coroutineContext.ensureActive()
+                        }
+                        if (stopCoarseScan) {
+                            decoded.bitmap.recycle()
+                            return@forEachFrameInWindow FrameIterationDecision.STOP
+                        }
                         val cursorMs = decoded.timeMs.coerceIn(0L, durationMs)
                         val percent = ((cursorMs.toFloat() / durationMs.toFloat()) * 100f).toInt().coerceIn(0, 100)
                         val elapsedSeconds = String.format(Locale.US, "%.1f", cursorMs / 1000f)
                         val totalSeconds = String.format(Locale.US, "%.1f", durationMs / 1000f)
                         progress(
+                            CompilationPipelineState.COARSE_SCAN,
                             "Scanning timeline ${elapsedSeconds}s / ${totalSeconds}s (${percent}%, step ${currentStepMs}ms)",
                             percent
                         )
@@ -2187,6 +2888,7 @@ class VideoCompilationEngine(private val context: Context) {
                             frame.recycle()
                         }
                         coarseFramesSeen++
+                        FrameIterationDecision.CONTINUE
                     }
                     timing.decodeMs += SystemClock.elapsedRealtime() - retryDecodeStart
                 } else {
@@ -2194,19 +2896,65 @@ class VideoCompilationEngine(private val context: Context) {
                 }
             }
 
+            val candidateTimestampLog = candidateWindows.joinToString(",") { it.seedMs.toString() }
             if (candidateWindows.isEmpty()) {
-                progress("No transition candidates found in visual pass; using direct OCR confirmation pass", 45)
-            } else {
-                progress("Candidate windows: ${candidateWindows.size}", 45)
+                AppLog.i(context, tag, "[finalize] candidate count=0 thread=${Thread.currentThread().name}")
+                AppLog.i(context, tag, "[finalize] candidate timestamps= thread=${Thread.currentThread().name}")
+                val noResultsMessage = if (scanBudgetReached) {
+                    "No transitions detected before scan budget expired"
+                } else {
+                    "No transition candidates were detected"
+                }
+                progress(CompilationPipelineState.NO_RESULTS, noResultsMessage, 45)
+                AppLog.i(context, tag, "[worker] no-results: $noResultsMessage thread=${Thread.currentThread().name}")
+                return@withContext ScanFindResult(
+                    emptyList(),
+                    timing,
+                    emptyList(),
+                    ScanMetrics.empty(),
+                    durationMs,
+                    candidateCount = 0,
+                    candidateTimestampsMs = emptyList(),
+                    scanBudgetReached = scanBudgetReached
+                )
             }
-            val candidateWindowsForRefine = if (candidateWindows.size <= scanConfig.maxCandidateWindows) {
-                candidateWindows
-            } else {
-                val stride = max(1, candidateWindows.size / scanConfig.maxCandidateWindows)
-                candidateWindows.filterIndexed { index, _ -> index % stride == 0 || index == candidateWindows.lastIndex }
+            if (scanBudgetReached) {
+                progress(CompilationPipelineState.FINALIZING, "Scan budget reached. Finalizing from collected candidates", 43)
             }
+            AppLog.i(context, tag, "[finalize] candidate count=${candidateWindows.size} thread=${Thread.currentThread().name}")
+            AppLog.i(context, tag, "[finalize] candidate timestamps=$candidateTimestampLog thread=${Thread.currentThread().name}")
+            progress(CompilationPipelineState.FINALIZING, "Finalizing ${candidateWindows.size} candidates", 44)
+            AppLog.i(context, tag, "[finalize] beginning candidate merge thread=${Thread.currentThread().name}")
+            val candidateMergeStarted = SystemClock.elapsedRealtime()
+            val candidateWindowsForRefine = try {
+                withTimeout(CANDIDATE_MERGE_TIMEOUT_MS) {
+                    runInterruptible(Dispatchers.Default) {
+                        if (candidateWindows.size <= scanConfig.maxCandidateWindows) {
+                            candidateWindows.toList()
+                        } else {
+                            val stride = max(1, candidateWindows.size / scanConfig.maxCandidateWindows)
+                            candidateWindows.filterIndexed { index, _ -> index % stride == 0 || index == candidateWindows.lastIndex }
+                        }
+                    }
+                }
+            } catch (timeout: TimeoutCancellationException) {
+                val failure = IllegalStateException("Candidate merge timed out after ${CANDIDATE_MERGE_TIMEOUT_MS}ms", timeout)
+                recordHandledWorkerFailure(context, tag, "[finalize] candidate merge failed", failure)
+                throw failure
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                recordHandledWorkerFailure(context, tag, "[finalize] candidate merge failed", failure)
+                throw failure
+            }
+            AppLog.i(
+                context,
+                tag,
+                "[finalize] candidate merge completed in ${SystemClock.elapsedRealtime() - candidateMergeStarted} ms thread=${Thread.currentThread().name}"
+            )
             if (candidateWindowsForRefine.size != candidateWindows.size) {
                 progress(
+                    CompilationPipelineState.FINALIZING,
                     "Speed cap: refining ${candidateWindowsForRefine.size}/${candidateWindows.size} candidate windows",
                     45
                 )
@@ -2215,14 +2963,13 @@ class VideoCompilationEngine(private val context: Context) {
             var hasCapturedFirstOne = false
             val uniqueTransitions = ArrayList<Long>()
             val ocrPassStart = SystemClock.elapsedRealtime()
+            AppLog.i(context, tag, "[finalize] beginning number confirmation thread=${Thread.currentThread().name}")
+            try {
+                withTimeout(scanConfig.ocrBudgetMs) {
             for ((index, candidate) in candidateWindowsForRefine.withIndex()) {
-                if (SystemClock.elapsedRealtime() - ocrPassStart >= scanConfig.ocrBudgetMs) {
-                    progress("OCR budget reached, keeping ${uniqueTransitions.size} detected transitions", 45)
-                    break
-                }
-                if (!coroutineContext.isActive) {
-                    return@withContext ScanFindResult(emptyList(), timing, emptyList(), ScanMetrics.empty(), durationMs)
-                }
+                currentCoroutineContext().ensureActive()
+                val confirmationPercent = 46 + ((index + 1) * 7 / candidateWindowsForRefine.size.coerceAtLeast(1))
+                progress(CompilationPipelineState.REFINING, "Confirming transition ${index + 1} of ${candidateWindowsForRefine.size}", confirmationPercent)
                 val candidateStart = max(0L, candidate.startMs)
                 val candidateEnd = min(durationMs, candidate.endMs)
                 val sampleStart = max(0L, candidateStart - scanConfig.prefirstProbeMs)
@@ -2371,8 +3118,9 @@ class VideoCompilationEngine(private val context: Context) {
                         evidence = transitionEvidence
                     )
                 )
-                val progressPercent = min(100, ((transitionAtMs.toFloat() / durationMs.toFloat()) * 100f + 1).toInt())
+                val progressPercent = confirmationPercent
                 progress(
+                    CompilationPipelineState.REFINING,
                     "$transitionLabel (candidate ${index + 1}/${candidateWindowsForRefine.size}) at ${formatMs(transitionAtMs)}; cut ${formatMs(cutStartMs)} -> ${formatMs(cutEndMs)}",
                     progressPercent
                 )
@@ -2382,20 +3130,58 @@ class VideoCompilationEngine(private val context: Context) {
                     "candidate=$index score=${candidate.peakScore} before=$beforeNumber after=$transitionTargetNumber @${formatMs(transitionAtMs)}"
                 )
             }
+                }
+            } catch (timeout: TimeoutCancellationException) {
+                val failure = IllegalStateException("Number confirmation timed out after ${scanConfig.ocrBudgetMs}ms", timeout)
+                recordHandledWorkerFailure(context, tag, "[finalize] number confirmation failed", failure)
+                throw failure
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                recordHandledWorkerFailure(context, tag, "[finalize] number confirmation failed", failure)
+                throw failure
+            }
+            AppLog.i(
+                context,
+                tag,
+                "[finalize] number confirmation completed in ${SystemClock.elapsedRealtime() - ocrPassStart} ms thread=${Thread.currentThread().name}"
+            )
+            AppLog.i(context, tag, "[finalize] confirmed transitions=${uniqueTransitions.size} thread=${Thread.currentThread().name}")
 
             val artifactPadMs = transitionStyle.edgePaddingMs
-            val rawSegments = uniqueTransitions.map { t ->
-                val requested = buildRequestedSegment(t, durationMs)
-                SegmentWindow(
-                    startMs = max(0L, requested.startMs - artifactPadMs),
-                    endMs = min(durationMs, requested.endMs + artifactPadMs)
-                )
-            }.sortedBy { it.startMs }
-            val mergedTiming = measureTimeMillis {
-                mergeWithGap(rawSegments, transitionStyle.mergeGapMs)
+            AppLog.i(context, tag, "[clip plan] generating clips thread=${Thread.currentThread().name}")
+            progress(CompilationPipelineState.BUILDING_CLIP_PLAN, "Building clip plan from ${uniqueTransitions.size} confirmed transitions", 54)
+            val clipPlanStarted = SystemClock.elapsedRealtime()
+            val merged = try {
+                withTimeout(CLIP_PLAN_TIMEOUT_MS) {
+                    runInterruptible(Dispatchers.Default) {
+                        val rawSegments = uniqueTransitions.map { t ->
+                            val requested = buildRequestedSegment(t, durationMs)
+                            SegmentWindow(
+                                startMs = max(0L, requested.startMs - artifactPadMs),
+                                endMs = min(durationMs, requested.endMs + artifactPadMs)
+                            )
+                        }.sortedBy { it.startMs }
+                        mergeWithGap(rawSegments, transitionStyle.mergeGapMs)
+                    }
+                }
+            } catch (timeout: TimeoutCancellationException) {
+                val failure = IllegalStateException("Clip-plan generation timed out after ${CLIP_PLAN_TIMEOUT_MS}ms", timeout)
+                recordHandledWorkerFailure(context, tag, "[clip plan] generation failed", failure)
+                throw failure
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                recordHandledWorkerFailure(context, tag, "[clip plan] generation failed", failure)
+                throw failure
             }
-            val merged = mergeWithGap(rawSegments, transitionStyle.mergeGapMs)
-            timing.mergeMs = mergedTiming
+            timing.mergeMs = SystemClock.elapsedRealtime() - clipPlanStarted
+            AppLog.i(context, tag, "[clip plan] generated ${merged.size} clips in ${timing.mergeMs} ms thread=${Thread.currentThread().name}")
+            AppLog.i(
+                context,
+                tag,
+                "[clip plan] clip start/end timestamps=${merged.joinToString(",") { "${it.startMs}-${it.endMs}" }} thread=${Thread.currentThread().name}"
+            )
             val wallClockMs = SystemClock.elapsedRealtime() - scanStartRealtime
             val baselineSamplesEstimate = (durationMs / scanConfig.baselineStepMs).toInt().coerceAtLeast(1)
             val ocrReductionPercent = if (baselineSamplesEstimate > 0) {
@@ -2405,8 +3191,9 @@ class VideoCompilationEngine(private val context: Context) {
             }
             val throughput = if (wallClockMs > 0L) durationMs.toFloat() / wallClockMs.toFloat() else 0f
             progress(
+                CompilationPipelineState.BUILDING_CLIP_PLAN,
                 "Scanner metrics: ${String.format(Locale.US, "%.2f", throughput)}x realtime, visual=$visualSamples baseline=$baselineSamplesEstimate OCR=$ocrCalls (-$ocrReductionPercent%)",
-                50
+                54
             )
             val report = ScanFindReport(
                 sourceUri = sourceUri.toString(),
@@ -2447,13 +3234,33 @@ class VideoCompilationEngine(private val context: Context) {
                 transitionMarks = transitionMarks,
                 candidates = candidateWindows
             )
-            latestScanReportPath = writeScanReport(report)
-            return@withContext ScanFindResult(merged, timing, transitionMarks, report.metrics, durationMs)
+            latestScanReportPath = try {
+                writeScanReport(report)
+            } catch (failure: Exception) {
+                recordHandledWorkerFailure(context, tag, "[finalize] scan report persistence failed", failure)
+                throw failure
+            }
+            return@withContext ScanFindResult(
+                merged,
+                timing,
+                transitionMarks,
+                report.metrics,
+                durationMs,
+                candidateCount = candidateWindows.size,
+                candidateTimestampsMs = candidateWindows.map { it.seedMs },
+                scanBudgetReached = scanBudgetReached
+            )
         } finally {
-            digitRecognizer.close()
-            frameProvider.close()
-            retriever.release()
+            runCatching { frameProvider.close() }
+                .onFailure { AppLog.w(context, tag, "Frame provider cleanup failed", it) }
+            runCatching { retriever.release() }
+                .onFailure { AppLog.w(context, tag, "Metadata retriever cleanup failed", it) }
         }
+    }
+
+    override fun close() {
+        runCatching { digitRecognizer.close() }
+            .onFailure { AppLog.w(context, tag, "Digit recognizer cleanup failed", it) }
     }
 
     private suspend fun detectNumberInRange(
@@ -2473,6 +3280,7 @@ class VideoCompilationEngine(private val context: Context) {
         var singleHit: Int? = null
         var singleHitMs: Long? = null
         while (cursor <= endMs) {
+            currentCoroutineContext().ensureActive()
             val value = detectNumberAt(
                 frameProvider = frameProvider,
                 cursorMs = cursor,
@@ -2520,22 +3328,29 @@ class VideoCompilationEngine(private val context: Context) {
         var earliestAfter: Long? = null
         var lastBefore: Long? = null
 
-        for (decoded in frames) {
-            try {
-                val detection = detectCornerNumberWithTimings(decoded.bitmap, scanWindow, sourceRotationDegrees)
-                calls++
-                timing.cropMs += detection.cropMs
-                timing.preprocessMs += detection.preprocessMs
-                timing.ocrMs += detection.ocrMs
-                when (detection.value) {
-                    beforeNumber -> lastBefore = decoded.timeMs
-                    afterNumber -> {
-                        earliestAfter = decoded.timeMs
-                        break
+        try {
+            for (decoded in frames) {
+                currentCoroutineContext().ensureActive()
+                try {
+                    val detection = detectCornerNumberWithTimings(decoded.bitmap, scanWindow, sourceRotationDegrees)
+                    calls++
+                    timing.cropMs += detection.cropMs
+                    timing.preprocessMs += detection.preprocessMs
+                    timing.ocrMs += detection.ocrMs
+                    when (detection.value) {
+                        beforeNumber -> lastBefore = decoded.timeMs
+                        afterNumber -> {
+                            earliestAfter = decoded.timeMs
+                            break
+                        }
                     }
+                } finally {
+                    decoded.bitmap.recycle()
                 }
-            } finally {
-                decoded.bitmap.recycle()
+            }
+        } finally {
+            frames.forEach { decoded ->
+                if (!decoded.bitmap.isRecycled) decoded.bitmap.recycle()
             }
         }
 
@@ -2546,6 +3361,7 @@ class VideoCompilationEngine(private val context: Context) {
         var binaryHighMs = highMs
         val fallbackMs = max(denseStepMs, (binaryHighMs - binaryLowMs).coerceAtLeast(1L) / 48L)
         repeat(iterations.coerceIn(4, 20)) {
+            currentCoroutineContext().ensureActive()
             if (binaryHighMs - binaryLowMs <= fallbackMs) return@repeat
             val midMs = binaryLowMs + (binaryHighMs - binaryLowMs) / 2L
             val leftNumber = detectNumberAt(
@@ -2585,6 +3401,7 @@ class VideoCompilationEngine(private val context: Context) {
         var calls = 0
 
         while (cursorMs <= safeHitMs) {
+            currentCoroutineContext().ensureActive()
             val detected = detectNumberAt(
                 frameProvider = frameProvider,
                 cursorMs = cursorMs,
@@ -2630,6 +3447,7 @@ class VideoCompilationEngine(private val context: Context) {
         var calls = 0
 
         repeat(8) {
+            currentCoroutineContext().ensureActive()
             if (upperMs - lowerMs <= 250L) return@repeat
             val midMs = lowerMs + (upperMs - lowerMs) / 2L
             val detected = detectNumberAt(
@@ -2720,28 +3538,105 @@ class VideoCompilationEngine(private val context: Context) {
         quality: ExportQuality,
         format: ExportFormat,
         transitionStyle: TransitionStyle,
+        outputFile: File? = null,
         progress: (String, Int) -> Unit
-    ): File = withContext(Dispatchers.IO) {
-        val cache = context.cacheDir
+    ): VerifiedCompilationOutput = withContext(Dispatchers.IO) {
         val safeFormat = if (format == ExportFormat.Webm) ExportFormat.Mp4 else format
 
         if (segments.isEmpty()) throw IllegalStateException("No segments to assemble")
-        val output = File(cache, "compilation_${System.currentTimeMillis()}.${safeFormat.extension}")
+        val output = outputFile ?: File(
+            File(context.filesDir, "compilations").apply { mkdirs() },
+            "compilation_${System.currentTimeMillis()}.${safeFormat.extension}"
+        )
+        output.parentFile?.mkdirs()
+        val exportStarted = SystemClock.elapsedRealtime()
+        AppLog.i(context, tag, "[export] beginning thread=${Thread.currentThread().name}")
+        AppLog.i(context, tag, "[export] source URI=$sourceUri thread=${Thread.currentThread().name}")
+        AppLog.i(context, tag, "[export] destination URI/path=${output.absolutePath} thread=${Thread.currentThread().name}")
         try {
             progress("Using ${quality.label} profile with ${transitionStyle.label}", 56)
             progress("Opening source for direct export", 57)
-            val alignedSegments = alignSegmentsToVideoSyncSamples(sourceUri, mergeWithGap(segments.sortedBy { it.startMs }, transitionStyle.mergeGapMs))
-            materializeCompilation(sourceUri, alignedSegments, safeFormat, output) { message, percent ->
-                progress(message, percent)
+            val sourcePreparationStarted = SystemClock.elapsedRealtime()
+            AppLog.i(context, tag, "[export] source preparation beginning thread=${Thread.currentThread().name}")
+            val alignedSegments = try {
+                withTimeout(SOURCE_PREPARATION_TIMEOUT_MS) {
+                    runInterruptible(Dispatchers.IO) {
+                        alignSegmentsToVideoSyncSamples(
+                            sourceUri,
+                            mergeWithGap(segments.sortedBy { it.startMs }, transitionStyle.mergeGapMs)
+                        )
+                    }
+                }
+            } catch (timeout: TimeoutCancellationException) {
+                throw IllegalStateException(
+                    "Source preparation timed out after ${SOURCE_PREPARATION_TIMEOUT_MS}ms",
+                    timeout
+                )
             }
-            validateExportOutput(output)
+            AppLog.i(
+                context,
+                tag,
+                "[export] source preparation completed in ${SystemClock.elapsedRealtime() - sourcePreparationStarted} ms thread=${Thread.currentThread().name}"
+            )
+            try {
+                withTimeout(EXPORT_TIMEOUT_MS) {
+                    materializeCompilation(sourceUri, alignedSegments, safeFormat, output) { message, percent ->
+                        AppLog.i(context, tag, "[export] progress $percent%: $message thread=${Thread.currentThread().name}")
+                        progress(message, percent)
+                    }
+                }
+            } catch (timeout: TimeoutCancellationException) {
+                throw IllegalStateException("Export timed out after ${EXPORT_TIMEOUT_MS}ms", timeout)
+            }
+            AppLog.i(
+                context,
+                tag,
+                "[export] completed in ${SystemClock.elapsedRealtime() - exportStarted} ms thread=${Thread.currentThread().name}"
+            )
+            val verified = verifyCompilationOutput(output)
             progress("Compilation ready to save", 94)
-            return@withContext output
+            return@withContext verified
+        } catch (cancelled: CancellationException) {
+            if (output.exists()) {
+                runCatching { check(output.delete()) { "Unable to delete partial output ${output.absolutePath}" } }
+                    .onFailure { AppLog.w(context, tag, "Cancellation cleanup failed", it) }
+            }
+            throw cancelled
         } catch (e: Exception) {
+            recordHandledWorkerFailure(context, tag, "[export] failed after ${SystemClock.elapsedRealtime() - exportStarted} ms", e)
             if (output.exists()) {
                 runCatching { output.delete() }
+                    .onFailure { AppLog.w(context, tag, "Partial output cleanup failed: ${output.absolutePath}", it) }
             }
             throw e
+        }
+    }
+
+    suspend fun verifyCompilationOutput(output: File): VerifiedCompilationOutput = withContext(Dispatchers.IO) {
+        val verifyStarted = SystemClock.elapsedRealtime()
+        AppLog.i(context, tag, "[verify] beginning thread=${Thread.currentThread().name}")
+        AppLog.i(context, tag, "[verify] output exists=${output.exists()} thread=${Thread.currentThread().name}")
+        AppLog.i(context, tag, "[verify] output size=${if (output.exists()) output.length() else 0L} bytes thread=${Thread.currentThread().name}")
+        try {
+            val verified = withTimeout(VERIFY_TIMEOUT_MS) {
+                runInterruptible(Dispatchers.IO) { validateExportOutput(output) }
+            }
+            AppLog.i(context, tag, "[verify] output duration=${verified.durationMs} ms thread=${Thread.currentThread().name}")
+            AppLog.i(
+                context,
+                tag,
+                "[verify] completed in ${SystemClock.elapsedRealtime() - verifyStarted} ms thread=${Thread.currentThread().name}"
+            )
+            verified
+        } catch (timeout: TimeoutCancellationException) {
+            val failure = IllegalStateException("Output verification timed out after ${VERIFY_TIMEOUT_MS}ms", timeout)
+            recordHandledWorkerFailure(context, tag, "[verify] failed", failure)
+            throw failure
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            recordHandledWorkerFailure(context, tag, "[verify] failed", failure)
+            throw failure
         }
     }
 
@@ -2782,6 +3677,11 @@ class VideoCompilationEngine(private val context: Context) {
                 }
             }
             best.value
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (timeout: OcrRecognitionTimeoutException) {
+            recordHandledWorkerFailure(context, tag, "[finalize] OCR recognition timed out", timeout)
+            throw timeout
         } catch (e: Exception) {
             AppLog.w(context, tag, "Skipping OCR frame after vision input failure: ${e::class.java.simpleName}: ${e.message}", e)
             null
@@ -2863,6 +3763,11 @@ class VideoCompilationEngine(private val context: Context) {
             }
             val chosen = best ?: DigitRecognition(null, "", 0f, "raw")
             NumberDetectionResult(chosen.value, cropMs, preprocessMs, totalOcrMs, chosen.confidence, chosen.rawText, chosen.branch)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (timeout: OcrRecognitionTimeoutException) {
+            recordHandledWorkerFailure(context, tag, "[finalize] OCR recognition timed out", timeout)
+            throw timeout
         } catch (e: Exception) {
             AppLog.w(context, tag, "Skipping OCR frame after vision input failure: ${e::class.java.simpleName}: ${e.message}", e)
             NumberDetectionResult(null, cropMs, preprocessMs, 0L, 0f, "", "error")
@@ -2961,6 +3866,8 @@ class VideoCompilationEngine(private val context: Context) {
                     sourceHeight = sourceHeight
                 ) ?: return null
                 DecodedFrame(timeMs, bitmap)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 AppLog.w(context, tag, "Frame decode failed at $timeMs", e)
                 null
@@ -2976,6 +3883,7 @@ class VideoCompilationEngine(private val context: Context) {
             val frames = ArrayList<DecodedFrame>()
             forEachFrameInWindow(startMs, endMs, sampleEveryMs, targetWidthPx) { frame ->
                 frames.add(frame)
+                FrameIterationDecision.CONTINUE
             }
             return frames
         }
@@ -2985,16 +3893,16 @@ class VideoCompilationEngine(private val context: Context) {
             endMs: Long,
             sampleEveryMs: Long,
             targetWidthPx: Int,
-            onFrame: suspend (DecodedFrame) -> Unit
+            onFrame: suspend (DecodedFrame) -> FrameIterationDecision
         ) {
             if (startMs > endMs) return
             val safeStepMs = sampleEveryMs.coerceAtLeast(50L)
             var cursorMs = startMs.coerceAtLeast(0L)
             while (cursorMs <= endMs) {
-                try {
-                    frameAt(cursorMs, targetWidthPx)?.let { onFrame(it) }
-                } catch (_: Exception) {
-                    // Defensive: allow scan to continue even if a single decode frame fails.
+                currentCoroutineContext().ensureActive()
+                val decoded = frameAt(cursorMs, targetWidthPx)
+                if (decoded != null && shouldStopFrameIteration(onFrame(decoded))) {
+                    return
                 }
                 val nextMs = min(endMs, cursorMs + safeStepMs)
                 if (nextMs == cursorMs) break
@@ -3042,8 +3950,17 @@ class VideoCompilationEngine(private val context: Context) {
         override suspend fun frameAt(timeMs: Long, targetWidthPx: Int): DecodedFrame? {
             val windowStart = max(0L, timeMs - 750L)
             val windowEnd = timeMs + 750L
-            return decodeWindow(windowStart, windowEnd, max(125L, targetWidthPx.takeIf { it > 0 }?.let { 250L } ?: 250L), targetWidthPx)
-                .minByOrNull { kotlin.math.abs(it.timeMs - timeMs) }
+            val frames = decodeWindow(
+                windowStart,
+                windowEnd,
+                max(125L, targetWidthPx.takeIf { it > 0 }?.let { 250L } ?: 250L),
+                targetWidthPx
+            )
+            val selected = frames.minByOrNull { kotlin.math.abs(it.timeMs - timeMs) }
+            frames.forEach { decoded ->
+                if (decoded !== selected) decoded.bitmap.recycle()
+            }
+            return selected
         }
 
         override suspend fun forEachFrameInWindow(
@@ -3051,7 +3968,7 @@ class VideoCompilationEngine(private val context: Context) {
             endMs: Long,
             sampleEveryMs: Long,
             targetWidthPx: Int,
-            onFrame: suspend (DecodedFrame) -> Unit
+            onFrame: suspend (DecodedFrame) -> FrameIterationDecision
         ) {
             if (startMs > endMs) return
             val safeStartUs = max(0L, startMs) * 1000L
@@ -3085,9 +4002,18 @@ class VideoCompilationEngine(private val context: Context) {
                 val info = MediaCodec.BufferInfo()
                 var inputDone = false
                 var outputDone = false
+                var endOfWindowSampleQueued = false
                 var nextSampleUs = safeStartUs
+                var lastCodecProgressMs = SystemClock.elapsedRealtime()
 
-                while (!outputDone && currentCoroutineContext().isActive) {
+                while (!outputDone) {
+                    currentCoroutineContext().ensureActive()
+                    if (SystemClock.elapsedRealtime() - lastCodecProgressMs >= DECODER_STALL_TIMEOUT_MS) {
+                        throw IllegalStateException(
+                            "MediaCodec produced no input/output progress for ${DECODER_STALL_TIMEOUT_MS}ms " +
+                                "while decoding ${startMs}ms..${endMs}ms"
+                        )
+                    }
                     if (!inputDone) {
                         val inputIndex = codec.dequeueInputBuffer(10_000)
                         if (inputIndex >= 0) {
@@ -3097,23 +4023,36 @@ class VideoCompilationEngine(private val context: Context) {
                                 inputDone = true
                             } else {
                                 inputBuffer.clear()
-                                val sampleSize = extractor.readSampleData(inputBuffer, 0)
-                                if (sampleSize < 0) {
+                                if (endOfWindowSampleQueued) {
                                     codec.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                     inputDone = true
                                 } else {
-                                    val sampleTimeUs = extractor.sampleTime
-                                    codec.queueInputBuffer(
-                                        inputIndex,
-                                        0,
-                                        sampleSize,
-                                        sampleTimeUs,
-                                        extractorSampleFlagsToBufferFlags(extractor.sampleFlags)
-                                    )
-                                    extractor.advance()
-                                    if (sampleTimeUs >= safeEndUs) {
-                                        inputDone = true
+                                    val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                                    val sampleTimeUs = if (sampleSize >= 0) extractor.sampleTime else -1L
+                                    when (decoderInputAction(false, sampleSize >= 0, sampleTimeUs, safeEndUs)) {
+                                        DecoderInputAction.QUEUE_END_OF_STREAM -> {
+                                            codec.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                            inputDone = true
+                                        }
+                                        DecoderInputAction.QUEUE_SAMPLE,
+                                        DecoderInputAction.QUEUE_BOUNDARY_SAMPLE -> {
+                                            codec.queueInputBuffer(
+                                                inputIndex,
+                                                0,
+                                                sampleSize,
+                                                sampleTimeUs,
+                                                extractorSampleFlagsToBufferFlags(extractor.sampleFlags)
+                                            )
+                                            extractor.advance()
+                                            if (sampleTimeUs >= safeEndUs) {
+                                                endOfWindowSampleQueued = true
+                                            }
+                                        }
                                     }
+                                }
+                                lastCodecProgressMs = SystemClock.elapsedRealtime()
+                                if (inputDone) {
+                                    // The output loop now has a real EOS buffer to drain.
                                 }
                             }
                         }
@@ -3144,8 +4083,11 @@ class VideoCompilationEngine(private val context: Context) {
                                         } else {
                                             normalized
                                         }
-                                            onFrame(DecodedFrame(presentationUs / 1000L, finalBitmap, presentationUs))
+                                            val decision = onFrame(DecodedFrame(presentationUs / 1000L, finalBitmap, presentationUs))
                                             nextSampleUs = presentationUs + safeStepUs
+                                            if (shouldStopFrameIteration(decision)) {
+                                                outputDone = true
+                                            }
                                         } else {
                                             val bitmap = imageToBitmap(image)
                                             if (bitmap.width > 0 && bitmap.height > 0) {
@@ -3160,25 +4102,30 @@ class VideoCompilationEngine(private val context: Context) {
                             if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                                 outputDone = true
                             }
+                            lastCodecProgressMs = SystemClock.elapsedRealtime()
                         }
                         outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                            // ignore
+                            lastCodecProgressMs = SystemClock.elapsedRealtime()
                         }
                         outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
-                            if (inputDone) {
-                                outputDone = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                            }
+                            // A finite watchdog above handles codecs that never return the queued EOS.
                         }
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 AppLog.w(context, tag, "MediaCodec frame provider failed; will fall back to retriever", e)
                 throw e
             } finally {
                 runCatching { codec?.stop() }
+                    .onFailure { AppLog.w(context, tag, "Decoder stop cleanup failed", it) }
                 runCatching { codec?.release() }
+                    .onFailure { AppLog.w(context, tag, "Decoder release cleanup failed", it) }
                 runCatching { imageReader?.close() }
+                    .onFailure { AppLog.w(context, tag, "Decoder image reader cleanup failed", it) }
                 runCatching { extractor.release() }
+                    .onFailure { AppLog.w(context, tag, "Decoder extractor cleanup failed", it) }
             }
         }
 
@@ -3492,7 +4439,7 @@ class VideoCompilationEngine(private val context: Context) {
         }
     }
 
-    private fun materializeCompilation(
+    private suspend fun materializeCompilation(
         sourceUri: Uri,
         segments: List<SegmentWindow>,
         format: ExportFormat,
@@ -3510,10 +4457,14 @@ class VideoCompilationEngine(private val context: Context) {
         }
 
         val extractor = MediaExtractor()
+        var muxer: MediaMuxer? = null
+        var muxerStarted = false
+        try {
         extractor.setDataSource(context, sourceUri, null)
         val trackMap = mutableMapOf<Int, Int>()
 
-        val muxer = MediaMuxer(output.absolutePath, muxerFormat)
+        muxer = MediaMuxer(output.absolutePath, muxerFormat)
+        val activeMuxer = muxer
         val trackMimeTypes = mutableMapOf<Int, String>()
         for (trackIndex in 0 until extractor.trackCount) {
             val trackFormat = extractor.getTrackFormat(trackIndex)
@@ -3521,16 +4472,16 @@ class VideoCompilationEngine(private val context: Context) {
             if (mime == null || (!mime.startsWith("audio/") && !mime.startsWith("video/"))) {
                 continue
             }
-            trackMap[trackIndex] = muxer.addTrack(trackFormat)
+            trackMap[trackIndex] = activeMuxer.addTrack(trackFormat)
             trackMimeTypes[trackIndex] = mime
         }
 
         if (trackMap.isEmpty()) {
-            extractor.release()
             throw IllegalStateException("No audio/video tracks found for export")
         }
 
-        muxer.start()
+        activeMuxer.start()
+        muxerStarted = true
         val totalSegments = segments.size
         val segmentBuffer = ByteBuffer.allocateDirect(16 * 1024 * 1024)
         val sampleInfo = MediaCodec.BufferInfo()
@@ -3542,12 +4493,15 @@ class VideoCompilationEngine(private val context: Context) {
         var lastExportLogMs = 0L
 
         segments.forEachIndexed { index, segment ->
+            currentCoroutineContext().ensureActive()
+            progress("Exporting segment ${index + 1} of $totalSegments", 60 + (index * 35 / totalSegments))
             val segStartUs = segment.startMs * 1000L
             val segEndUs = segment.endMs * 1000L
             val segmentDurationUs = max(1L, segEndUs - segStartUs)
             var segmentMaxUs = outputCursorUs
 
             for (trackIndex in trackMap.keys) {
+                currentCoroutineContext().ensureActive()
                 var lastOutputSampleUs = outputCursorUs
                 extractor.selectTrack(trackIndex)
                 extractor.seekTo(segStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
@@ -3555,6 +4509,7 @@ class VideoCompilationEngine(private val context: Context) {
                 var segTrackMaxUs = outputCursorUs
 
                 while (true) {
+                    currentCoroutineContext().ensureActive()
                     val sampleTimeUs = extractor.sampleTime
                     if (sampleTimeUs == -1L || sampleTimeUs >= segEndUs) {
                         break
@@ -3579,7 +4534,7 @@ class VideoCompilationEngine(private val context: Context) {
                     sampleInfo.presentationTimeUs = outputPtsUs
                     sampleInfo.flags = extractorSampleFlagsToBufferFlags(extractor.sampleFlags)
                     sampleInfo.offset = 0
-                    muxer.writeSampleData(trackMap.getValue(trackIndex), segmentBuffer, sampleInfo)
+                    activeMuxer.writeSampleData(trackMap.getValue(trackIndex), segmentBuffer, sampleInfo)
                     lastOutputSampleUs = outputPtsUs
                     if (isProgressTrack) {
                         segTrackMaxUs = maxOf(segTrackMaxUs, outputPtsUs)
@@ -3616,20 +4571,33 @@ class VideoCompilationEngine(private val context: Context) {
             progress("Writing segment ${index + 1}/$totalSegments", percent)
         }
 
-        muxer.stop()
-        muxer.release()
-        extractor.release()
+        progress("Muxing final output", 95)
+        AppLog.i(context, tag, "[export] muxing final output thread=${Thread.currentThread().name}")
+        activeMuxer.stop()
+        muxerStarted = false
+        } finally {
+            if (muxerStarted) runCatching { muxer?.stop() }
+                .onFailure { AppLog.w(context, tag, "Muxer stop cleanup failed", it) }
+            runCatching { muxer?.release() }
+                .onFailure { AppLog.w(context, tag, "Muxer cleanup failed", it) }
+            runCatching { extractor.release() }
+                .onFailure { AppLog.w(context, tag, "Export extractor cleanup failed", it) }
+        }
     }
 
-    private fun validateExportOutput(output: File) {
-        if (!output.exists() || output.length() <= 0L) {
+    private fun validateExportOutput(output: File): VerifiedCompilationOutput {
+        if (!output.exists() || !output.isFile || !output.canRead() || output.length() <= 0L) {
             throw IllegalStateException("Exported compilation was not written successfully")
+        }
+        output.inputStream().use { input ->
+            if (input.read() < 0) throw IllegalStateException("Exported compilation cannot be opened")
         }
         val retriever = MediaMetadataRetriever()
         val extractor = MediaExtractor()
+        var durationMs = 0L
         try {
             retriever.setDataSource(output.absolutePath)
-            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
             if (durationMs <= 0L) {
                 throw IllegalStateException("Exported compilation has no readable duration")
             }
@@ -3642,8 +4610,26 @@ class VideoCompilationEngine(private val context: Context) {
             }
         } finally {
             runCatching { retriever.release() }
+                .onFailure { AppLog.w(context, tag, "Verification retriever cleanup failed", it) }
             runCatching { extractor.release() }
+                .onFailure { AppLog.w(context, tag, "Verification extractor cleanup failed", it) }
         }
+        val readableUri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.updateprovider",
+            output
+        )
+        context.contentResolver.openInputStream(readableUri).use { input ->
+            if (input == null || input.read() < 0) {
+                throw IllegalStateException("Exported compilation URI cannot be opened")
+            }
+        }
+        return VerifiedCompilationOutput(
+            file = output,
+            uri = readableUri.toString(),
+            sizeBytes = output.length(),
+            durationMs = durationMs
+        )
     }
 
     private fun alignSegmentsToVideoSyncSamples(
@@ -3672,11 +4658,9 @@ class VideoCompilationEngine(private val context: Context) {
                 SegmentWindow(alignedStartMs, segment.endMs)
             }.sortedBy { it.startMs }
             mergeOverlapping(aligned)
-        } catch (e: Exception) {
-            AppLog.w(context, tag, "Unable to align export segments to video sync samples", e)
-            segments
         } finally {
-            extractor.release()
+            runCatching { extractor.release() }
+                .onFailure { AppLog.w(context, tag, "Sync-sample extractor cleanup failed", it) }
         }
     }
 
@@ -3724,7 +4708,17 @@ data class ScanFindResult(
     val timing: ScanTimingSummary,
     val transitionMarks: List<TransitionMark>,
     val metrics: ScanMetrics,
-    val videoDurationMs: Long
+    val videoDurationMs: Long,
+    val candidateCount: Int = 0,
+    val candidateTimestampsMs: List<Long> = emptyList(),
+    val scanBudgetReached: Boolean = false
+)
+
+data class VerifiedCompilationOutput(
+    val file: File,
+    val uri: String,
+    val sizeBytes: Long,
+    val durationMs: Long
 )
 
 private data class ScanFindReport(
@@ -3802,7 +4796,7 @@ private interface FrameProvider : AutoCloseable {
         endMs: Long,
         sampleEveryMs: Long,
         targetWidthPx: Int = 0,
-        onFrame: suspend (DecodedFrame) -> Unit
+        onFrame: suspend (DecodedFrame) -> FrameIterationDecision
     )
     suspend fun decodeWindow(
         startMs: Long,
@@ -3813,6 +4807,7 @@ private interface FrameProvider : AutoCloseable {
         val frames = ArrayList<DecodedFrame>()
         forEachFrameInWindow(startMs, endMs, sampleEveryMs, targetWidthPx) { frame ->
             frames.add(frame)
+            FrameIterationDecision.CONTINUE
         }
         return frames
     }

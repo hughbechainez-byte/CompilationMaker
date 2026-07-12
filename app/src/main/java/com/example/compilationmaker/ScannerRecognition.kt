@@ -5,7 +5,9 @@ import android.graphics.Bitmap
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeout
 import kotlin.math.max
 import kotlin.math.min
 
@@ -27,7 +29,13 @@ class MlKitDigitRecognizer(context: Context) : DigitRecognizer {
 
     override suspend fun recognize(bitmap: Bitmap, branch: String): DigitRecognition {
         val image = InputImage.fromBitmap(bitmap, 0)
-        val result = recognizer.process(image).await()
+        val result = try {
+            withTimeout(OCR_RECOGNITION_TIMEOUT_MS) {
+                recognizer.process(image).await()
+            }
+        } catch (timeout: TimeoutCancellationException) {
+            throw OcrRecognitionTimeoutException(branch, timeout)
+        }
         val text = result.text.replace("\n", " ").trim()
         val match = Regex("[-+]?[0-9]+").find(text)
         val value = match?.value?.toIntOrNull()
@@ -43,7 +51,14 @@ class MlKitDigitRecognizer(context: Context) : DigitRecognizer {
     override fun close() {
         recognizer.close()
     }
+
+    private companion object {
+        const val OCR_RECOGNITION_TIMEOUT_MS = 10_000L
+    }
 }
+
+internal class OcrRecognitionTimeoutException(branch: String, cause: Throwable) :
+    IllegalStateException("OCR $branch recognition timed out", cause)
 
 fun extractDigitCandidates(rawText: String): List<Int> {
     if (rawText.isBlank()) return emptyList()
