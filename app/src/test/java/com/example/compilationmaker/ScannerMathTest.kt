@@ -86,4 +86,25 @@ class ScannerMathTest {
         decision = updateHysteresisDecision(decision, changed = false)
         assertFalse(decision.open)
     }
+
+    @Test
+    fun coarseCheckpointsAreDirectAndNeverTreatZeroAsAChange() {
+        val checkpoints = generateCheckpointTimestamps(4_782_000L, 60_000L)
+
+        assertEquals(81, checkpoints.size)
+        assertEquals(0L, checkpoints.first())
+        assertEquals(60_000L, checkpoints[1])
+        assertEquals(4_782_000L, checkpoints.last())
+        assertTrue(checkpoints.zipWithNext().all { (a, b) -> b - a == 60_000L || b == 4_782_000L })
+        assertFalse(classifyTransition(null, null).accepted)
+    }
+
+    @Test
+    fun supportedTransitionStatesIncludeNoNumberToOneAndOneToTwo() {
+        assertEquals("null -> 1", classifyTransition(null, 1).label)
+        assertTrue(classifyTransition(null, 1).accepted)
+        assertEquals("1 -> 2", classifyTransition(1, 2).label)
+        assertTrue(classifyTransition(1, 2).accepted)
+        assertFalse(classifyTransition(1, 1).accepted)
+    }
 }

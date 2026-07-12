@@ -2,12 +2,19 @@ package com.example.compilationmaker
 
 import android.content.Context
 import android.graphics.Bitmap
+import com.google.mlkit.common.MlKitException
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.resume
 import kotlin.math.max
 import kotlin.math.min
 
@@ -24,14 +31,35 @@ interface DigitRecognizer : AutoCloseable {
 }
 
 class MlKitDigitRecognizer(context: Context) : DigitRecognizer {
-    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    private val appContext = context.applicationContext
+    private val gate = Mutex()
+    private var recognizer = createRecognizer()
+    private var closed = false
     override val name: String = "mlkit-text-recognition"
 
     override suspend fun recognize(bitmap: Bitmap, branch: String): DigitRecognition {
+        require(!bitmap.isRecycled) { "OCR bitmap is recycled" }
+        require(bitmap.width > 0 && bitmap.height > 0) { "OCR bitmap is empty" }
+        return gate.withLock {
+            try {
+                recognizeOnce(bitmap, branch, attempt = 1)
+            } catch (timeout: OcrRecognitionTimeoutException) {
+                AppLog.w(appContext, "OCR", "[ocr] timeout branch=$branch; recreating recognizer for one retry", timeout)
+                recreateAfterTimeout()
+                recognizeOnce(bitmap, branch, attempt = 2)
+            }
+        }
+    }
+
+    private suspend fun recognizeOnce(bitmap: Bitmap, branch: String, attempt: Int): DigitRecognition {
         val image = InputImage.fromBitmap(bitmap, 0)
         val result = try {
             withTimeout(OCR_RECOGNITION_TIMEOUT_MS) {
-                recognizer.process(image).await()
+                val started = android.os.SystemClock.elapsedRealtime()
+                AppLog.d(appContext, "OCR", "[ocr] bitmap dimensions=${bitmap.width}x${bitmap.height} config=${bitmap.config} branch=$branch attempt=$attempt")
+                val task = recognizer.process(image)
+                AppLog.d(appContext, "OCR", "[ocr] process submitted branch=$branch attempt=$attempt")
+                awaitTask(task, started, branch, attempt)
             }
         } catch (timeout: TimeoutCancellationException) {
             throw OcrRecognitionTimeoutException(branch, timeout)
@@ -48,12 +76,60 @@ class MlKitDigitRecognizer(context: Context) : DigitRecognizer {
         return DigitRecognition(value, text, confidence, branch)
     }
 
+    private suspend fun awaitTask(task: com.google.android.gms.tasks.Task<Text>, started: Long, branch: String, attempt: Int): Text =
+        suspendCancellableCoroutine { continuation ->
+            task.addOnSuccessListener { result ->
+                val elapsed = android.os.SystemClock.elapsedRealtime() - started
+                AppLog.d(appContext, "OCR", "[ocr] task success in ${elapsed} ms branch=$branch attempt=$attempt")
+                if (continuation.isActive) continuation.resume(result)
+            }.addOnFailureListener { failure ->
+                val elapsed = android.os.SystemClock.elapsedRealtime() - started
+                val detail = mlKitFailureDetail(failure)
+                AppLog.e(appContext, "OCR", "[ocr] task failed in ${elapsed} ms branch=$branch attempt=$attempt exception=$detail", failure)
+                if (continuation.isActive) continuation.resumeWithException(failure)
+            }.addOnCanceledListener {
+                val elapsed = android.os.SystemClock.elapsedRealtime() - started
+                AppLog.w(appContext, "OCR", "[ocr] task cancelled in ${elapsed} ms branch=$branch attempt=$attempt")
+                if (continuation.isActive) continuation.cancel(CancellationException("ML Kit OCR task cancelled"))
+            }
+            continuation.invokeOnCancellation {
+                AppLog.w(appContext, "OCR", "[ocr] task abandoned branch=$branch attempt=$attempt")
+            }
+        }
+
+    private fun createRecognizer(): com.google.mlkit.vision.text.TextRecognizer {
+        AppLog.d(appContext, "OCR", "[ocr] recognizer created")
+        AppLog.d(appContext, "OCR", "[ocr] dependency mode=bundled")
+        return TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    }
+
+    private fun recreateAfterTimeout() {
+        if (closed) return
+        runCatching { recognizer.close() }
+            .onFailure { AppLog.w(appContext, "OCR", "[ocr] recognizer close after timeout failed", it) }
+        AppLog.d(appContext, "OCR", "[ocr] recognizer closed")
+        recognizer = createRecognizer()
+    }
+
+    private fun mlKitFailureDetail(failure: Exception): String {
+        val mlKit = failure as? MlKitException
+        return if (mlKit != null) {
+            "${mlKit::class.java.simpleName}(errorCode=${mlKit.errorCode}, message=${mlKit.message}, cause=${mlKit.cause})"
+        } else {
+            "${failure::class.java.name}(message=${failure.message}, cause=${failure.cause})"
+        }
+    }
+
     override fun close() {
-        recognizer.close()
+        if (closed) return
+        closed = true
+        runCatching { recognizer.close() }
+            .onFailure { AppLog.w(appContext, "OCR", "[ocr] recognizer close failed", it) }
+        AppLog.d(appContext, "OCR", "[ocr] recognizer closed")
     }
 
     private companion object {
-        const val OCR_RECOGNITION_TIMEOUT_MS = 10_000L
+        const val OCR_RECOGNITION_TIMEOUT_MS = 5_000L
     }
 }
 

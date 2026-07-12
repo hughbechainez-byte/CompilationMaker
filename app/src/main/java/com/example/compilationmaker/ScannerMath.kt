@@ -2,6 +2,21 @@ package com.example.compilationmaker
 
 import kotlin.math.max
 
+fun generateCheckpointTimestamps(durationMs: Long, intervalMs: Long): List<Long> {
+    require(durationMs >= 0L)
+    val step = intervalMs.coerceAtLeast(1L)
+    val result = ArrayList<Long>()
+    var cursor = 0L
+    while (cursor < durationMs) {
+        result += cursor
+        val next = cursor + step
+        if (next <= cursor) break
+        cursor = next
+    }
+    if (result.isEmpty() || result.last() != durationMs) result += durationMs
+    return result
+}
+
 data class HysteresisDecision(
     val open: Boolean,
     val consecutiveChanged: Int,

@@ -2649,6 +2649,19 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             }
 
             val scanStartRealtime = SystemClock.elapsedRealtime()
+            val preflightFrame = frameProvider.frameAt(0L, scanConfig.ocrFrameWidthPx)
+                ?: throw IllegalStateException("OCR model unavailable: unable to retrieve preflight frame")
+            try {
+                val roi = cropToWindow(preflightFrame.bitmap, scanWindow)
+                try {
+                    digitRecognizer.recognize(roi, "preflight")
+                    AppLog.i(context, "OCR", "[ocr preflight] completed successfully")
+                } finally {
+                    roi.recycle()
+                }
+            } finally {
+                preflightFrame.bitmap.recycle()
+            }
             val adaptiveStepMs = if (scanConfig.maxVisualSamples > 0) {
                 max(
                     scanConfig.sampleStepMs,
@@ -2677,7 +2690,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             var rejectedCandidates = 0
             val transitionMarks = ArrayList<TransitionMark>()
             try {
-                frameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
+                retrieverFrameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
                     if (stopCoarseScan) {
                         decoded.bitmap.recycle()
                         return@forEachFrameInWindow FrameIterationDecision.STOP
@@ -2722,8 +2735,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                         }
 
                         val visualChangeDetected = rawVisualChange && consecutiveChangedSamples >= 2
-                        val periodicProbe = msSinceLastCandidate >= effectivePeriodicProbeMs
-                        val shouldProbe = previousSignature == null || visualChangeDetected || periodicProbe
+                        val shouldProbe = visualChangeDetected
                         val probeSeedMs = if (visualChangeDetected) pendingChangeStartMs ?: cursorMs else cursorMs
                         val probePeakScore = if (visualChangeDetected && pendingPeakScore > 0f) {
                             pendingPeakScore
@@ -2735,9 +2747,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                             val padEnd = min(durationMs, probeSeedMs + scanConfig.candidatePadMs)
                             val seedMs = probeSeedMs
                             val reason = when {
-                                previousSignature == null -> CandidateReason.InitialProbe
                                 visualChangeDetected -> CandidateReason.VisualChange
-                                else -> CandidateReason.PeriodicProbe
+                                else -> CandidateReason.VisualChange
                             }
                             if (candidateWindows.isNotEmpty()) {
                                 val last = candidateWindows.last()
@@ -2802,7 +2813,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     frameProvider = retrieverFrameProvider
                     coarseFramesSeen = 0
                     val retryDecodeStart = SystemClock.elapsedRealtime()
-                    frameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
+                    retrieverFrameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
                         if (SystemClock.elapsedRealtime() - scanStartRealtime >= scanConfig.totalScanBudgetMs) {
                             scanBudgetReached = true
                             stopCoarseScan = true
@@ -2844,8 +2855,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                                 pendingPeakScore = 0f
                             }
                             val visualChangeDetected = rawVisualChange && consecutiveChangedSamples >= 2
-                            val periodicProbe = msSinceLastCandidate >= effectivePeriodicProbeMs
-                            val shouldProbe = previousSignature == null || visualChangeDetected || periodicProbe
+                            val shouldProbe = visualChangeDetected
                             val probeSeedMs = if (visualChangeDetected) pendingChangeStartMs ?: cursorMs else cursorMs
                             val probePeakScore = if (visualChangeDetected && pendingPeakScore > 0f) pendingPeakScore else signatureDelta
                             if (shouldProbe) {
@@ -2853,9 +2863,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                                 val padEnd = min(durationMs, probeSeedMs + scanConfig.candidatePadMs)
                                 val seedMs = probeSeedMs
                                 val reason = when {
-                                    previousSignature == null -> CandidateReason.InitialProbe
                                     visualChangeDetected -> CandidateReason.VisualChange
-                                    else -> CandidateReason.PeriodicProbe
+                                    else -> CandidateReason.VisualChange
                                 }
                                 if (candidateWindows.isNotEmpty()) {
                                     val last = candidateWindows.last()
@@ -3132,9 +3141,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             }
                 }
             } catch (timeout: TimeoutCancellationException) {
-                val failure = IllegalStateException("Number confirmation timed out after ${scanConfig.ocrBudgetMs}ms", timeout)
-                recordHandledWorkerFailure(context, tag, "[finalize] number confirmation failed", failure)
-                throw failure
+                AppLog.w(context, tag, "[finalize] OCR budget elapsed; continuing with ${uniqueTransitions.size} confirmed transitions", timeout)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -3220,7 +3227,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 fallbackUsed = fallbackUsed,
                 failureReason = null,
                 metrics = ScanMetrics(
-                    scannerVersion = "v0.17.0-streaming-change-map-v2",
+                    scannerVersion = "v0.17.5-ocr-retry-direct-checkpoints",
                     wallClockMs = wallClockMs,
                     baselineSamplesEstimate = baselineSamplesEstimate,
                     visualSamples = visualSamples,
@@ -3766,11 +3773,11 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (timeout: OcrRecognitionTimeoutException) {
-            recordHandledWorkerFailure(context, tag, "[finalize] OCR recognition timed out", timeout)
-            throw timeout
+            AppLog.w(context, tag, "[ocr] candidate OCR timed out after controlled retry; skipping candidate", timeout)
+            NumberDetectionResult(null, cropMs, preprocessMs, 0L, 0f, "", "timeout", OcrCandidateStatus.OCR_TIMEOUT)
         } catch (e: Exception) {
             AppLog.w(context, tag, "Skipping OCR frame after vision input failure: ${e::class.java.simpleName}: ${e.message}", e)
-            NumberDetectionResult(null, cropMs, preprocessMs, 0L, 0f, "", "error")
+            NumberDetectionResult(null, cropMs, preprocessMs, 0L, 0f, "", "error", OcrCandidateStatus.OCR_UNAVAILABLE)
         } finally {
             if (scaled != corner) {
                 scaled.recycle()
@@ -3897,16 +3904,22 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         ) {
             if (startMs > endMs) return
             val safeStepMs = sampleEveryMs.coerceAtLeast(50L)
-            var cursorMs = startMs.coerceAtLeast(0L)
-            while (cursorMs <= endMs) {
+            val checkpoints = generateCheckpointTimestamps(endMs.coerceAtLeast(startMs), safeStepMs)
+                .map { (startMs.coerceAtLeast(0L) + it).coerceAtMost(endMs) }
+                .distinct()
+            check(checkpoints.size <= ((endMs - startMs).coerceAtLeast(0L) / safeStepMs) + 2) {
+                "Coarse checkpoint plan enumerated intervening frames"
+            }
+            checkpoints.forEachIndexed { index, cursorMs ->
                 currentCoroutineContext().ensureActive()
+                val checkpointStarted = SystemClock.elapsedRealtime()
                 val decoded = frameAt(cursorMs, targetWidthPx)
-                if (decoded != null && shouldStopFrameIteration(onFrame(decoded))) {
-                    return
+                if (decoded != null) {
+                    val actualStarted = SystemClock.elapsedRealtime()
+                    val decision = onFrame(decoded)
+                    AppLog.d(context, tag, "checkpoint ${index + 1} of ${checkpoints.size} requested timestamp=${cursorMs} actual frame timestamp=${decoded.timeMs} seek duration=${actualStarted - checkpointStarted} ms decode duration=${SystemClock.elapsedRealtime() - actualStarted} ms ROI crop duration=logged by caller signature duration=logged by caller total checkpoint duration=${SystemClock.elapsedRealtime() - checkpointStarted} ms")
+                    if (shouldStopFrameIteration(decision)) return
                 }
-                val nextMs = min(endMs, cursorMs + safeStepMs)
-                if (nextMs == cursorMs) break
-                cursorMs = nextMs
             }
         }
 
@@ -4757,8 +4770,11 @@ private data class NumberDetectionResult(
     val ocrMs: Long,
     val confidence: Float = 0f,
     val rawText: String = "",
-    val branch: String = "raw"
+    val branch: String = "raw",
+    val status: OcrCandidateStatus = if (value == null) OcrCandidateStatus.NO_TRANSITION else OcrCandidateStatus.CONFIRMED_TRANSITION
 )
+
+private enum class OcrCandidateStatus { CONFIRMED_TRANSITION, NO_TRANSITION, OCR_UNAVAILABLE, OCR_TIMEOUT, INVALID_FRAME }
 
 private data class TransitionCandidateWindow(
     val startMs: Long,
@@ -4833,7 +4849,7 @@ data class ScanMetrics(
 ) {
     companion object {
         fun empty(): ScanMetrics = ScanMetrics(
-            scannerVersion = "v0.17.0-streaming-change-map-v2",
+            scannerVersion = "v0.17.5-ocr-retry-direct-checkpoints",
             wallClockMs = 0L,
             baselineSamplesEstimate = 0,
             visualSamples = 0,
