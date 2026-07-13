@@ -20,6 +20,13 @@ sha256sum "$fixture_a" > "$artifacts/fixture-sha256.txt"
 adb -s "$serial" install -r "$release_apk"
 adb -s "$serial" shell pm clear "$package" >/dev/null
 adb -s "$serial" push "$fixture_a" /sdcard/Download/compilation_test_video_A.mp4 >/dev/null
+adb -s "$serial" shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
+  -d file:///sdcard/Download/compilation_test_video_A.mp4 >/dev/null
+for _ in $(seq 1 20); do
+  if adb -s "$serial" shell content query --uri content://media/external/video/media \
+    --projection _display_name 2>/dev/null | grep -q compilation_test_video_A.mp4; then break; fi
+  sleep 1
+done
 adb -s "$serial" install "$test_apk"
 adb -s "$serial" shell am instrument -w -r \
   -e class "$test_class" \

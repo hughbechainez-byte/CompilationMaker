@@ -3,9 +3,9 @@
 ## Current test
 
 - Status: BLOCKED — Phase 1 A→output→B validation has not yet run.
-- App/version: 0.17.7 (versionCode 39), pending release commit.
+- App/version: 0.17.8 (versionCode 40), pending release commit.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
-- Local release APK SHA-256: `312A442A05D8FB041FC844FF4A66F505452892FF36D696D7E23EFE6C0BC99F76`
+- Local release APK SHA-256: `38FF82D4313ABD78FC92364286D2BD89990DE28DFAF9D256E99EFFFC11A3A3FD`
 - Video A SHA-256: `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`
 - Video B SHA-256: `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`
 
@@ -18,6 +18,7 @@
 - The local QA runner now waits for a booted AVD, rechecks readiness before each run, and launches with the SwiftShader renderer and a 2 GB guest-memory target.
 - No physical device was connected.
 - The hosted Ubuntu QA workflow initially failed before tests because `gradlew` lacked execute permission; this patch adds the required `chmod +x` step.
+- The deterministic picker test now resolves staged Video A from MediaStore, returns that URI through the picker contract, and verifies the Worker enters an active state before cancellation.
 
 ## First unresolved causal failure
 
