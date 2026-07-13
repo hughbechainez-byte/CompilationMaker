@@ -204,7 +204,14 @@ function Start-Compilation {
 
 function Set-ScanProfile {
     $ui = Dump-Ui
-    Tap-UiNode (Find-UiNode $ui "com.hughbechainez.compilationmaker:id/scanSpeedPicker" $null) "scan profile picker"
+    $picker = Find-UiNode $ui "com.hughbechainez.compilationmaker:id/scanSpeedPicker" $null
+    if (-not $picker) {
+        Adb @("shell", "input", "swipe", "540", "1900", "540", "700", "600")
+        Start-Sleep -Milliseconds 500
+        $ui = Dump-Ui
+        $picker = Find-UiNode $ui "com.hughbechainez.compilationmaker:id/scanSpeedPicker" $null
+    }
+    Tap-UiNode $picker "scan profile picker"
     for ($i = 0; $i -lt 10; $i++) {
         Start-Sleep -Milliseconds 300
         $ui = Dump-Ui
