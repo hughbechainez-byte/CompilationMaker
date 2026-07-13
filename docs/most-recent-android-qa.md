@@ -3,9 +3,9 @@
 ## Current test
 
 - Status: PARTIAL PASS — release-signed Video A scan/fallback/export/verification passed; hosted QA and host-only Video B comparison remain.
-- App/version: 0.17.12 (versionCode 44), implementation commit `585e139`.
+- App/version: 0.17.12 (versionCode 44), release tag `v0.17.12`, implementation commit `585e139`.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
-- Locally validated release APK SHA-256: `DA503E3F318939C65933087A038B66FFAB23E5C5F24938E64A02A971EF191863`
+- Published release APK SHA-256: `7E75AE92DBEA35C43204AFEE9BA3B8F3A5F7D0C548873B408B762D478FF94FA3`
 - Video A SHA-256: `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`
 - Video B SHA-256: `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`
 

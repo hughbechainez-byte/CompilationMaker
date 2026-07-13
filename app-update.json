@@ -1,11 +1,23 @@
 {
-  "version": "v0.17.10",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.10",
+  "version": "v0.17.12",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.12",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.10/CompilationMaker-v0.17.10.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.12/CompilationMaker-v0.17.12.apk"
   },
-  "notes": "Test build: manually triggered hosted QA now verifies the newest published release instead of an obsolete fallback APK. Installations signed by the old certificate must uninstall and reinstall before installing this release.",
+  "notes": "Fixes OCR confirmation with layered timeouts, padded 128px inputs, incremental results, labeled visual fallback clips, and monotonic progress. Release-signed Video A produced and verified a 94-second compilation on API 35.",
   "updates": [
+    {
+      "version": "v0.17.12",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.12",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.12/CompilationMaker-v0.17.12.apk",
+      "notes": "Fixes OCR confirmation with layered timeouts, padded 128px inputs, incremental results, labeled visual fallback clips, and monotonic progress. Release-signed Video A produced and verified a 94-second compilation on API 35."
+    },
+    {
+      "version": "v0.17.11",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.11",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.11/CompilationMaker-v0.17.11.apk",
+      "notes": "Test build: hosted QA now fails correctly when fixture staging or instrumentation fails instead of producing a false green result."
+    },
     {
       "version": "v0.17.10",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.10",
