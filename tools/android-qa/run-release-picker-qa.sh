@@ -54,8 +54,13 @@ adb -s "$serial" logcat -d -t 1000 > "$artifacts/logcat.txt"
 if [ "$instrumentation_status" -ne 0 ]; then
   exit "$instrumentation_status"
 fi
-if grep -qE 'FAILURES!!!|INSTRUMENTATION_CODE: -1|INSTRUMENTATION_STATUS_CODE: -2' "$artifacts/instrumentation.txt"; then
+if grep -qE 'FAILURES!!!|INSTRUMENTATION_STATUS_CODE: -2' "$artifacts/instrumentation.txt"; then
   echo 'Instrumentation reported a test failure.' >&2
+  exit 1
+fi
+if ! grep -qE '^OK \([0-9]+ test' "$artifacts/instrumentation.txt" || \
+   ! grep -q 'INSTRUMENTATION_STATUS_CODE: 0' "$artifacts/instrumentation.txt"; then
+  echo 'Instrumentation did not report a successful completed test.' >&2
   exit 1
 fi
 printf '%s\n' 'PASS deterministic picker handoff'

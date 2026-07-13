@@ -32,6 +32,7 @@
 - OCR used 128x144 prepared raw inputs; observed attempts completed in approximately 140-170 ms and stopped after a valid parsed digit.
 - The legacy UI runner's Downloads-provider URI failed source setup on this emulator; the deterministic end-to-end instrumentation uses the readable MediaStore URI and now covers scan through verified export.
 - Hosted run `29240352815` proved `adb` can exit 0 while instrumentation reports `INSTRUMENTATION_CODE: -1`; the runner now parses failure markers, and the test imports the staged fixture into MediaStore under test-only all-files access when scanning is unavailable.
+- Hosted run `29241217097` passed the actual test (`OK (1 test)`, 0 failed) and proved final instrumentation code `-1` is Android's success result; the runner now requires `OK` plus status 0 and rejects only real failure markers/status -2.
 
 ## First unresolved causal failure
 
