@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.8",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.8",
+  "version": "v0.17.9",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.9",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.8/CompilationMaker-v0.17.8.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.9/CompilationMaker-v0.17.9.apk"
   },
-  "notes": "Test build: deterministic picker QA now stages Video A through MediaStore and verifies WorkManager starts with its real URI. Installations signed by the old certificate must uninstall and reinstall before installing this release.",
+  "notes": "Test build: hosted emulator QA now enables KVM and reliably stages Video A before verifying picker-to-Worker handoff. Installations signed by the old certificate must uninstall and reinstall before installing this release.",
   "updates": [
+    {
+      "version": "v0.17.9",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.9",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.9/CompilationMaker-v0.17.9.apk",
+      "notes": "Test build: hosted emulator QA now enables KVM and reliably stages Video A before verifying picker-to-Worker handoff. Installations signed by the old certificate must uninstall and reinstall before installing this release."
+    },
     {
       "version": "v0.17.8",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.8",

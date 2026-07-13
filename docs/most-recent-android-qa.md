@@ -3,9 +3,9 @@
 ## Current test
 
 - Status: BLOCKED — Phase 1 A→output→B validation has not yet run.
-- App/version: 0.17.9 (versionCode 41), pending release commit.
+- App/version: 0.17.9 (versionCode 41), release tag `v0.17.9`.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
-- Release APK SHA-256: `35118E8F6E8668CB7EC62B6CF9FEEAA27179046A8958079068B9DCB3EFE4ECB1`
+- Release APK SHA-256: `91AA199842B451213B2872B51DE9A1426ABA1B152A2645F9ABCAB91423838196`
 - Video A SHA-256: `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`
 - Video B SHA-256: `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`
 
@@ -20,6 +20,7 @@
 - The hosted Ubuntu QA workflow initially failed before tests because `gradlew` lacked execute permission; this patch adds the required `chmod +x` step.
 - The deterministic picker test now resolves staged Video A from MediaStore, returns that URI through the picker contract, and verifies the Worker enters an active state before cancellation.
 - Hosted QA was blocked by disabled KVM and a shared-storage fixture push failure; the workflow now enables `/dev/kvm` access and the runner creates/retries the Downloads staging path.
+- The signed `CompilationMaker-v0.17.9.apk` release asset was published and verified reachable before this update feed was promoted.
 
 ## First unresolved causal failure
 
