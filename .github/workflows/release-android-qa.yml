@@ -39,10 +39,13 @@ jobs:
       - name: Download exact release APK and fixture A
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || 'v0.17.6' }}
         run: |
+          release_tag="${{ github.event.release.tag_name }}"
+          if [ -z "$release_tag" ]; then
+            release_tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          fi
           mkdir -p test-fixtures
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.apk' --dir test-fixtures
+          gh release download "$release_tag" --repo "$GITHUB_REPOSITORY" --pattern '*.apk' --dir test-fixtures
           mv "$(find test-fixtures -name '*.apk' | head -n1)" test-fixtures/release.apk
           curl --fail --location --output test-fixtures/compilation_test_video_A.mp4 \
             https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.5/compilation-test-video-A.mp4
