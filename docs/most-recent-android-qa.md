@@ -3,7 +3,7 @@
 ## Current test
 
 - Status: BLOCKED — Phase 1 A→output→B validation has not yet run.
-- App/version: 0.17.8 (versionCode 40), pending release commit.
+- App/version: 0.17.9 (versionCode 41), pending release commit.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
 - Release APK SHA-256: `35118E8F6E8668CB7EC62B6CF9FEEAA27179046A8958079068B9DCB3EFE4ECB1`
 - Video A SHA-256: `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`
@@ -19,6 +19,7 @@
 - No physical device was connected.
 - The hosted Ubuntu QA workflow initially failed before tests because `gradlew` lacked execute permission; this patch adds the required `chmod +x` step.
 - The deterministic picker test now resolves staged Video A from MediaStore, returns that URI through the picker contract, and verifies the Worker enters an active state before cancellation.
+- Hosted QA was blocked by disabled KVM and a shared-storage fixture push failure; the workflow now enables `/dev/kvm` access and the runner creates/retries the Downloads staging path.
 
 ## First unresolved causal failure
 

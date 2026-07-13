@@ -25,6 +25,10 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
+      - name: Enable KVM for the hosted emulator
+        run: |
+          sudo chmod 666 /dev/kvm
+
       - name: Restore release signing key for instrumentation
         env:
           COMPILATIONMAKER_KEYSTORE_BASE64: ${{ secrets.COMPILATIONMAKER_KEYSTORE_BASE64 }}
