@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.7",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.7",
+  "version": "v0.17.8",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.8",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.7/CompilationMaker-v0.17.7.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.8/CompilationMaker-v0.17.8.apk"
   },
-  "notes": "Test build: fixes the Ubuntu release-QA runner so its release-signed picker test can execute. Installations signed by the old certificate must uninstall and reinstall before installing this release.",
+  "notes": "Test build: deterministic picker QA now stages Video A through MediaStore and verifies WorkManager starts with its real URI. Installations signed by the old certificate must uninstall and reinstall before installing this release.",
   "updates": [
+    {
+      "version": "v0.17.8",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.8",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.8/CompilationMaker-v0.17.8.apk",
+      "notes": "Test build: deterministic picker QA now stages Video A through MediaStore and verifies WorkManager starts with its real URI. Installations signed by the old certificate must uninstall and reinstall before installing this release."
+    },
     {
       "version": "v0.17.7",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.7",
