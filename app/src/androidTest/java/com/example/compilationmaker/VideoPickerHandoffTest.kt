@@ -3,6 +3,7 @@ package com.example.compilationmaker
 import android.Manifest
 import android.app.Activity
 import android.app.Instrumentation
+import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
@@ -22,6 +23,7 @@ import androidx.work.WorkManager
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class VideoPickerHandoffTest {
@@ -79,6 +81,24 @@ class VideoPickerHandoffTest {
                 )
             }
         }
-        return null
+        val staged = File("/sdcard/Download/compilation_test_video_A.mp4")
+        if (!staged.isFile) return null
+        val inserted = context.contentResolver.insert(
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, "compilation_test_video_A.mp4")
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/CompilationMakerQA")
+            }
+        ) ?: return null
+        return try {
+            context.contentResolver.openOutputStream(inserted, "w")!!.use { output ->
+                staged.inputStream().use { input -> input.copyTo(output) }
+            }
+            inserted
+        } catch (failure: Exception) {
+            context.contentResolver.delete(inserted, null, null)
+            throw failure
+        }
     }
 }

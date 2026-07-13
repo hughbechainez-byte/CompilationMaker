@@ -3,9 +3,9 @@
 ## Current test
 
 - Status: PARTIAL PASS — release-signed Video A scan/fallback/export/verification passed; hosted QA and host-only Video B comparison remain.
-- App/version: 0.17.12 (versionCode 44), release tag `v0.17.12`, implementation commit `585e139`.
+- App/version: 0.17.13 (versionCode 45), hosted-QA reliability candidate based on OCR fix commit `585e139`.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
-- Published release APK SHA-256: `7E75AE92DBEA35C43204AFEE9BA3B8F3A5F7D0C548873B408B762D478FF94FA3`
+- Release APK SHA-256: pending v0.17.13 release asset.
 - Video A SHA-256: `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`
 - Video B SHA-256: `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`
 
@@ -31,6 +31,7 @@
 - Release-signed three-minute checkpoint Video A test completed in visual-fallback mode: 2 inferred transitions, 2 clips, verified 94,013 ms output, 902,471 bytes, and Worker `SUCCESS`.
 - OCR used 128x144 prepared raw inputs; observed attempts completed in approximately 140-170 ms and stopped after a valid parsed digit.
 - The legacy UI runner's Downloads-provider URI failed source setup on this emulator; the deterministic end-to-end instrumentation uses the readable MediaStore URI and now covers scan through verified export.
+- Hosted run `29240352815` proved `adb` can exit 0 while instrumentation reports `INSTRUMENTATION_CODE: -1`; the runner now parses failure markers, and the test imports the staged fixture into MediaStore under test-only all-files access when scanning is unavailable.
 
 ## First unresolved causal failure
 

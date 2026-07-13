@@ -43,6 +43,7 @@ if [ "$video_visible" != true ]; then
   exit 1
 fi
 adb -s "$serial" install "$test_apk"
+adb -s "$serial" shell appops set "$test_package" MANAGE_EXTERNAL_STORAGE allow
 set +e
 adb -s "$serial" shell am instrument -w -r \
   -e class "$test_class" \
@@ -52,5 +53,9 @@ set -e
 adb -s "$serial" logcat -d -t 1000 > "$artifacts/logcat.txt"
 if [ "$instrumentation_status" -ne 0 ]; then
   exit "$instrumentation_status"
+fi
+if grep -qE 'FAILURES!!!|INSTRUMENTATION_CODE: -1|INSTRUMENTATION_STATUS_CODE: -2' "$artifacts/instrumentation.txt"; then
+  echo 'Instrumentation reported a test failure.' >&2
+  exit 1
 fi
 printf '%s\n' 'PASS deterministic picker handoff'
