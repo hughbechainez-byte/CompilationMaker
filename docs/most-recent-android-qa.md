@@ -3,9 +3,9 @@
 ## Current test
 
 - Status: BLOCKED — Phase 1 A→output→B validation has not yet run.
-- App/version: 0.17.10 (versionCode 42), release tag `v0.17.10`.
+- App/version: 0.17.11 (versionCode 43), pending release tag.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
-- Release APK SHA-256: `ADBFE95A53B109C18CE22813CC0090061CDB43B62FF0A4C800B032F6C1E3353D`
+- Release APK SHA-256: pending v0.17.11 release asset.
 - Video A SHA-256: `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`
 - Video B SHA-256: `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`
 
@@ -23,7 +23,8 @@
 - The signed `CompilationMaker-v0.17.9.apk` release asset was published and verified reachable before this update feed was promoted.
 - Manual hosted-QA dispatch now resolves the latest published release rather than an obsolete hard-coded tag.
 - The signed `CompilationMaker-v0.17.10.apk` release asset was published and verified reachable before this update feed was promoted.
+- Hosted QA run `29236205919` exposed a false pass: the test could not find Video A in MediaStore, but the runner continued after the instrumentation failure. The runner now fails for missing MediaStore visibility and preserves the instrumentation exit status.
 
 ## First unresolved causal failure
 
-Run the complete deterministic Video A picker/Worker flow, pull `qa-run.json` and the output MP4, then compare it with host-only Video B. No scanner, export, or A/B correctness claim is made by this test.
+Make Video A reliably visible to the hosted API 35 MediaStore query, then rerun the deterministic picker/Worker handoff. No scanner, export, or A/B correctness claim is made by this test.

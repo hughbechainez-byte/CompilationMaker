@@ -27,14 +27,30 @@ for attempt in 1 2 3; do
 done
 adb -s "$serial" shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
   -d file:///sdcard/Download/compilation_test_video_A.mp4 >/dev/null
+video_visible=false
 for _ in $(seq 1 20); do
   if adb -s "$serial" shell content query --uri content://media/external/video/media \
-    --projection _display_name 2>/dev/null | grep -q compilation_test_video_A.mp4; then break; fi
+    --projection _display_name 2>/dev/null | grep -q compilation_test_video_A.mp4; then
+    video_visible=true
+    break
+  fi
   sleep 1
 done
+if [ "$video_visible" != true ]; then
+  adb -s "$serial" shell content query --uri content://media/external/video/media \
+    --projection _id:_display_name:relative_path >&2 || true
+  echo 'Video A did not become visible in MediaStore after scanning.' >&2
+  exit 1
+fi
 adb -s "$serial" install "$test_apk"
+set +e
 adb -s "$serial" shell am instrument -w -r \
   -e class "$test_class" \
   "$test_package/androidx.test.runner.AndroidJUnitRunner" | tee "$artifacts/instrumentation.txt"
+instrumentation_status=${PIPESTATUS[0]}
+set -e
 adb -s "$serial" logcat -d -t 1000 > "$artifacts/logcat.txt"
+if [ "$instrumentation_status" -ne 0 ]; then
+  exit "$instrumentation_status"
+fi
 printf '%s\n' 'PASS deterministic picker handoff'
