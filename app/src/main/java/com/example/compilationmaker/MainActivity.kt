@@ -163,11 +163,6 @@ class MainActivity : AppCompatActivity() {
             onVideoSelected(picked)
         }
 
-    private val preferredVideoPickerPackages = arrayOf(
-        "com.google.android.documentsui",
-        "com.android.documentsui"
-    )
-
     private fun onVideoSelected(picked: Uri) {
         if (hasActiveCompilation()) {
             emitTransientStatus("A compilation is already active. Reopen it instead of selecting another video.")
@@ -188,23 +183,13 @@ class MainActivity : AppCompatActivity() {
         val baseIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "video/*"
-            flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+            flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         }
 
-        val packageIntent = preferredVideoPickerPackages.firstNotNullOfOrNull { pkg ->
-            Intent(baseIntent).setPackage(pkg).also { candidate ->
-                return@firstNotNullOfOrNull if (candidate.resolveActivity(packageManager) != null) candidate else null
-            }
-        }
-        val fallback = baseIntent
-        val launchIntent = packageIntent ?: fallback
-        launchIntent.putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("video/mp4", "video/webm", "video/quicktime", "video/*"))
-        if (packageIntent != null) {
-            videoPickerLauncher.launch(launchIntent)
-        } else {
-            videoPickerLauncher.launch(Intent.createChooser(launchIntent, "Select video"))
-        }
+        baseIntent.putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("video/mp4", "video/webm", "video/quicktime", "video/*"))
+        videoPickerLauncher.launch(baseIntent)
     }
 
     private lateinit var qualitySpinner: Spinner

@@ -3,3 +3,5 @@ build/
 app/build/
 local.properties
 releases/*.apk
+keystores/
+*.keystore

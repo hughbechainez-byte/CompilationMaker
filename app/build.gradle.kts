@@ -8,11 +8,19 @@ android {
     compileSdk = 35
 
     signingConfigs {
-        create("sideloadUpdate") {
-            storeFile = rootProject.file("keystores/compilationmaker-update.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        create("release") {
+            val keystorePath = providers.environmentVariable("COMPILATIONMAKER_KEYSTORE_PATH").orNull
+            val storePasswordValue = providers.environmentVariable("COMPILATIONMAKER_STORE_PASSWORD").orNull
+            val keyAliasValue = providers.environmentVariable("COMPILATIONMAKER_KEY_ALIAS").orNull
+            val keyPasswordValue = providers.environmentVariable("COMPILATIONMAKER_KEY_PASSWORD").orNull
+            if (!keystorePath.isNullOrBlank() && !storePasswordValue.isNullOrBlank() &&
+                !keyAliasValue.isNullOrBlank() && !keyPasswordValue.isNullOrBlank()
+            ) {
+                storeFile = file(keystorePath)
+                storePassword = storePasswordValue
+                keyAlias = keyAliasValue
+                keyPassword = keyPasswordValue
+            }
             enableV1Signing = true
             enableV2Signing = true
             enableV3Signing = true
@@ -23,8 +31,10 @@ android {
         applicationId = "com.hughbechainez.compilationmaker"
         minSdk = 24
         targetSdk = 35
-        versionCode = 37
-        versionName = "0.17.5"
+        versionCode = 38
+        versionName = "0.17.6"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testBuildType = "release"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -33,11 +43,10 @@ android {
 
     buildTypes {
         getByName("debug") {
-            signingConfig = signingConfigs.getByName("sideloadUpdate")
         }
 
         release {
-            signingConfig = signingConfigs.getByName("sideloadUpdate")
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -83,4 +92,23 @@ dependencies {
     androidTestImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation("androidx.test.espresso:espresso-intents:3.6.1")
+}
+
+val releaseSigningVariables = listOf(
+    "COMPILATIONMAKER_KEYSTORE_PATH",
+    "COMPILATIONMAKER_STORE_PASSWORD",
+    "COMPILATIONMAKER_KEY_ALIAS",
+    "COMPILATIONMAKER_KEY_PASSWORD"
+)
+tasks.configureEach {
+    if (name.contains("Release", ignoreCase = true)) {
+        doFirst {
+            check(releaseSigningVariables.all { !providers.environmentVariable(it).orNull.isNullOrBlank() }) {
+                "Release signing requires ${releaseSigningVariables.joinToString()}."
+            }
+        }
+    }
 }

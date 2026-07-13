@@ -2,6 +2,8 @@
 
 ## Standing release policy
 
+Before every app change, read `docs/most-recent-android-qa.md`. After testing an update, replace that note with the version, commit, APK hash, fixture hashes, observed evidence, result, and first unresolved causal failure.
+
 When Dave asks for an app update or code change and does not explicitly say it is local-only, complete the distribution workflow automatically:
 
 1. Run `./gradlew clean assembleDebug assembleRelease` and `./gradlew test`.

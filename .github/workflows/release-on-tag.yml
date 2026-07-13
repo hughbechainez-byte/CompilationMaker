@@ -25,7 +25,19 @@ jobs:
       - name: Grant execute for Gradle wrapper
         run: chmod +x ./gradlew
 
+      - name: Restore release signing key
+        env:
+          COMPILATIONMAKER_KEYSTORE_BASE64: ${{ secrets.COMPILATIONMAKER_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$COMPILATIONMAKER_KEYSTORE_BASE64"
+          echo "$COMPILATIONMAKER_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/compilationmaker-release.keystore"
+
       - name: Build signed release APK
+        env:
+          COMPILATIONMAKER_KEYSTORE_PATH: ${{ runner.temp }}/compilationmaker-release.keystore
+          COMPILATIONMAKER_STORE_PASSWORD: ${{ secrets.COMPILATIONMAKER_STORE_PASSWORD }}
+          COMPILATIONMAKER_KEY_ALIAS: ${{ secrets.COMPILATIONMAKER_KEY_ALIAS }}
+          COMPILATIONMAKER_KEY_PASSWORD: ${{ secrets.COMPILATIONMAKER_KEY_PASSWORD }}
         run: |
           ./gradlew :app:assembleRelease
 
@@ -60,3 +72,5 @@ jobs:
           allowUpdates: true
           makeLatest: true
           generateReleaseNotes: true
+          body: |
+            Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.

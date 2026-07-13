@@ -75,14 +75,23 @@ function Wait-ForDevice {
     throw "Emulator did not become ready: $Serial"
 }
 
+function Assert-EmulatorReady {
+    $state = (& $adb devices | Select-String "^$Serial\s+device$")
+    $boot = if ($state) { (& $adb -s $Serial shell getprop sys.boot_completed).Trim() } else { "" }
+    if (-not $state -or $boot -ne "1") {
+        throw "Android emulator $Serial is not ready for QA."
+    }
+}
+
 if (-not (Test-Path $ApkPath)) { throw "APK not found: $ApkPath" }
 if (-not (Test-Path $VideoAPath)) { throw "Video A not found: $VideoAPath" }
 if (-not (Test-Path $VideoBPath)) { throw "Video B not found: $VideoBPath" }
 
 if (-not (& $adb devices | Select-String "^$Serial\s+device$")) {
-    Start-Process -WindowStyle Hidden -FilePath $emulator -ArgumentList "@$($env:COMPILATIONMAKER_AVD ?? 'CompilationMaker_API35')", "-no-snapshot", "-no-boot-anim", "-no-audio", "-gpu", "auto", "-memory", "4096"
+    Start-Process -WindowStyle Hidden -FilePath $emulator -ArgumentList "@$($env:COMPILATIONMAKER_AVD ?? 'CompilationMaker_API35')", "-no-snapshot", "-no-boot-anim", "-no-audio", "-gpu", "swiftshader_indirect", "-memory", "2048"
 }
 Wait-ForDevice
+Assert-EmulatorReady
 Adb @("install", "-r", $ApkPath)
 Adb @("push", $VideoAPath, "/sdcard/Download/compilation_test_video_A.mp4")
 Adb @("push", $VideoBPath, "/sdcard/Download/compilation_test_video_B.mp4")
@@ -222,6 +231,7 @@ function Set-ScanProfile {
 }
 
 function Run-One([string]$Title) {
+    Assert-EmulatorReady
     Adb @("shell", "am", "force-stop", $package)
     Adb @("shell", "am", "force-stop", "com.google.android.documentsui")
     Adb @("shell", "am", "force-stop", "com.google.android.apps.photos")
