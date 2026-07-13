@@ -22,8 +22,63 @@ data class DigitRecognition(
     val value: Int?,
     val rawText: String,
     val confidence: Float,
-    val branch: String
+    val branch: String,
+    val status: DigitRecognitionStatus = when {
+        value != null -> DigitRecognitionStatus.PARSED
+        rawText.isBlank() -> DigitRecognitionStatus.NO_TEXT
+        else -> DigitRecognitionStatus.NO_VALID_INTEGER
+    }
 )
+
+enum class DigitRecognitionStatus { PARSED, NO_TEXT, NO_VALID_INTEGER, TIMEOUT, ML_KIT_FAILURE }
+
+/** Centralized, bounded confirmation timeouts. Overall work scales with candidates but stays capped. */
+internal object ConfirmationTimeoutPolicy {
+    const val FRAME_EXTRACTION_MS = 3_000L
+    const val OCR_ATTEMPT_MS = 3_500L
+    const val CANDIDATE_MS = 16_000L
+    const val OVERALL_BASE_MS = 8_000L
+    const val OVERALL_PER_CANDIDATE_MS = 11_000L
+    const val OVERALL_CAP_MS = 180_000L
+
+    fun overallMs(candidateCount: Int): Long =
+        (OVERALL_BASE_MS + candidateCount.coerceAtLeast(0) * OVERALL_PER_CANDIDATE_MS)
+            .coerceAtMost(OVERALL_CAP_MS)
+}
+
+internal object OcrPreparationPolicy {
+    const val MIN_RECOGNITION_SIDE_PX = 128
+    const val MAX_RECOGNITION_SIDE_PX = 512
+    const val ROI_PADDING_FRACTION = 0.12f
+
+    fun targetSize(width: Int, height: Int): Pair<Int, Int> {
+        require(width > 0 && height > 0)
+        val minScale = max(
+            MIN_RECOGNITION_SIDE_PX.toFloat() / width,
+            MIN_RECOGNITION_SIDE_PX.toFloat() / height
+        )
+        val maxScale = min(
+            MAX_RECOGNITION_SIDE_PX.toFloat() / width,
+            MAX_RECOGNITION_SIDE_PX.toFloat() / height
+        )
+        val scale = when {
+            width < MIN_RECOGNITION_SIDE_PX || height < MIN_RECOGNITION_SIDE_PX -> minScale
+            width > MAX_RECOGNITION_SIDE_PX || height > MAX_RECOGNITION_SIDE_PX -> maxScale
+            else -> 1f
+        }
+        return max(1, (width * scale).toInt()) to max(1, (height * scale).toInt())
+    }
+}
+
+internal fun shouldTryNextOcrVariant(attemptIndex: Int, recognition: DigitRecognition): Boolean = when {
+    recognition.value != null && recognition.confidence >= 0.95f -> false
+    recognition.status == DigitRecognitionStatus.TIMEOUT -> false
+    recognition.status == DigitRecognitionStatus.ML_KIT_FAILURE -> false
+    attemptIndex >= 3 -> false
+    else -> true
+}
+
+internal fun mlKitFailureIsCandidateLocal(errorCode: Int): Boolean = errorCode == 13 || errorCode >= 0
 
 interface DigitRecognizer : AutoCloseable {
     val name: String
@@ -44,9 +99,11 @@ class MlKitDigitRecognizer(context: Context) : DigitRecognizer {
             try {
                 recognizeOnce(bitmap, branch, attempt = 1)
             } catch (timeout: OcrRecognitionTimeoutException) {
-                AppLog.w(appContext, "OCR", "[ocr] timeout branch=$branch; recreating recognizer for one retry", timeout)
-                recreateAfterTimeout()
-                recognizeOnce(bitmap, branch, attempt = 2)
+                AppLog.w(appContext, "OCR", "[ocr] attempt timed out branch=$branch; candidate will continue without retry", timeout)
+                DigitRecognition(null, "", 0f, branch, DigitRecognitionStatus.TIMEOUT)
+            } catch (mlKit: MlKitException) {
+                AppLog.w(appContext, "OCR", "[ocr] ML Kit failure is candidate-local branch=$branch errorCode=${mlKit.errorCode}", mlKit)
+                DigitRecognition(null, "", 0f, branch, DigitRecognitionStatus.ML_KIT_FAILURE)
             }
         }
     }
@@ -54,7 +111,7 @@ class MlKitDigitRecognizer(context: Context) : DigitRecognizer {
     private suspend fun recognizeOnce(bitmap: Bitmap, branch: String, attempt: Int): DigitRecognition {
         val image = InputImage.fromBitmap(bitmap, 0)
         val result = try {
-            withTimeout(OCR_RECOGNITION_TIMEOUT_MS) {
+            withTimeout(ConfirmationTimeoutPolicy.OCR_ATTEMPT_MS) {
                 val started = android.os.SystemClock.elapsedRealtime()
                 AppLog.d(appContext, "OCR", "[ocr] bitmap dimensions=${bitmap.width}x${bitmap.height} config=${bitmap.config} branch=$branch attempt=$attempt")
                 val task = recognizer.process(image)
@@ -73,14 +130,21 @@ class MlKitDigitRecognizer(context: Context) : DigitRecognizer {
             match.value.length <= 3 -> 0.88f
             else -> 0.72f
         }
-        return DigitRecognition(value, text, confidence, branch)
+        val status = when {
+            text.isBlank() -> DigitRecognitionStatus.NO_TEXT
+            value == null -> DigitRecognitionStatus.NO_VALID_INTEGER
+            else -> DigitRecognitionStatus.PARSED
+        }
+        AppLog.d(appContext, "OCR", "[ocr] completed branch=$branch status=$status parsed=${value ?: "none"} text=${text.take(24)}")
+        return DigitRecognition(value, text, confidence, branch, status)
     }
 
     private suspend fun awaitTask(task: com.google.android.gms.tasks.Task<Text>, started: Long, branch: String, attempt: Int): Text =
         suspendCancellableCoroutine { continuation ->
             task.addOnSuccessListener { result ->
                 val elapsed = android.os.SystemClock.elapsedRealtime() - started
-                AppLog.d(appContext, "OCR", "[ocr] task success in ${elapsed} ms branch=$branch attempt=$attempt")
+                val disposition = if (result.text.isBlank()) "no-text" else "text-returned"
+                AppLog.d(appContext, "OCR", "[ocr] task completed in ${elapsed} ms branch=$branch attempt=$attempt disposition=$disposition")
                 if (continuation.isActive) continuation.resume(result)
             }.addOnFailureListener { failure ->
                 val elapsed = android.os.SystemClock.elapsedRealtime() - started
@@ -103,14 +167,6 @@ class MlKitDigitRecognizer(context: Context) : DigitRecognizer {
         return TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     }
 
-    private fun recreateAfterTimeout() {
-        if (closed) return
-        runCatching { recognizer.close() }
-            .onFailure { AppLog.w(appContext, "OCR", "[ocr] recognizer close after timeout failed", it) }
-        AppLog.d(appContext, "OCR", "[ocr] recognizer closed")
-        recognizer = createRecognizer()
-    }
-
     private fun mlKitFailureDetail(failure: Exception): String {
         val mlKit = failure as? MlKitException
         return if (mlKit != null) {
@@ -126,10 +182,6 @@ class MlKitDigitRecognizer(context: Context) : DigitRecognizer {
         runCatching { recognizer.close() }
             .onFailure { AppLog.w(appContext, "OCR", "[ocr] recognizer close failed", it) }
         AppLog.d(appContext, "OCR", "[ocr] recognizer closed")
-    }
-
-    private companion object {
-        const val OCR_RECOGNITION_TIMEOUT_MS = 5_000L
     }
 }
 

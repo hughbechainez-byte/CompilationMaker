@@ -126,6 +126,11 @@ class CompilationWorker(
                 throw scanResult.failure ?: IllegalStateException(scanResult.failureReason ?: "Scan failed")
             }
 
+            if (scanResult.visualFallbackUsed) {
+                fallbackUsed = true
+                failureReason = "OCR confirmed no transitions; exported high-confidence visual fallback clips"
+            }
+
             val reportPath = scanResult.reportPath
             jobStore.update(workId) { record ->
                 record.copy(candidateCount = scanResult.candidateCount, clipCount = scanResult.segments.size)
@@ -179,8 +184,8 @@ class CompilationWorker(
                 )
             }
 
-            setProgressCompat("export", "Assembling compilation", 55)
-            setForegroundCompat("export", "Assembling compilation", 55)
+            setProgressCompat("export", "Assembling compilation", 55, fallbackUsed)
+            setForegroundCompat("export", "Assembling compilation", 55, fallbackUsed)
             val renderedOutput = engine.renderCompilation(
                 sourceUri = sourceUri,
                 segments = windows,
@@ -190,14 +195,14 @@ class CompilationWorker(
                 outputFile = expectedOutputFile
             ) { message, percent ->
                 val exportPercent = ((percent * 0.35f) + 55f).toInt().coerceIn(55, 95)
-                setProgressCompat("export", message, exportPercent)
-                setForegroundCompat("export", message, exportPercent)
+                setProgressCompat("export", message, exportPercent, fallbackUsed)
+                setForegroundCompat("export", message, exportPercent, fallbackUsed)
                 if (!isActive) throw CancellationException("Job cancelled")
             }
             outputForCleanup = renderedOutput.file
 
-            setProgressCompat("verify", "Verifying compilation output", 96)
-            setForegroundCompat("verify", "Verifying compilation output", 96)
+            setProgressCompat("verify", "Verifying compilation output", 96, fallbackUsed)
+            setForegroundCompat("verify", "Verifying compilation output", 96, fallbackUsed)
             val verifiedOutput = engine.verifyCompilationOutput(renderedOutput.file)
             val evidence = OutputVerificationEvidence(
                 uri = verifiedOutput.uri,
@@ -332,7 +337,8 @@ class CompilationWorker(
                 reportPath = engine.latestScanReportPath,
                 candidateCount = result.candidateCount,
                 candidateTimestampsMs = result.candidateTimestampsMs,
-                scanBudgetReached = result.scanBudgetReached
+                scanBudgetReached = result.scanBudgetReached,
+                visualFallbackUsed = result.visualFallbackUsed
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -388,15 +394,19 @@ class CompilationWorker(
         pipelineState: CompilationPipelineState = pipelineStateForProgressPhase(phase)
     ) {
         if (percent < 0 || percent > 100) return
-        AppLog.i(applicationContext, "CompilationWorker", "[$phase] $message ($percent%) fallback=$fallbackUsed")
+        val safePercent = monotonicProgressPercent(
+            CompilationJobStore(applicationContext).load()?.takeIf { it.workId == id.toString() }?.progressPercent ?: 0,
+            percent
+        )
+        AppLog.i(applicationContext, "CompilationWorker", "[$phase] $message ($safePercent%) fallback=$fallbackUsed")
         CompilationJobStore(applicationContext).updateState(
             id.toString(),
             pipelineState,
             phase,
             message,
-            percent
+            safePercent
         )
-        publishProgressData(phase, message, percent, fallbackUsed, pipelineState)
+        publishProgressData(phase, message, safePercent, fallbackUsed, pipelineState)
     }
 
     private fun publishProgressData(
@@ -423,8 +433,12 @@ class CompilationWorker(
         fallbackUsed: Boolean = false,
         pipelineState: CompilationPipelineState = pipelineStateForProgressPhase(phase)
     ) {
-        publishProgressData(phase, message, percent, fallbackUsed, pipelineState)
-        val notification = compileNotification(phase, message, percent)
+        val safePercent = monotonicProgressPercent(
+            CompilationJobStore(applicationContext).load()?.takeIf { it.workId == id.toString() }?.progressPercent ?: 0,
+            percent
+        )
+        publishProgressData(phase, message, safePercent, fallbackUsed, pipelineState)
+        val notification = compileNotification(phase, message, safePercent)
         setForegroundAsync(createForegroundInfo(notification))
     }
 
@@ -522,7 +536,8 @@ class CompilationWorker(
         val failure: Throwable? = null,
         val candidateCount: Int = 0,
         val candidateTimestampsMs: List<Long> = emptyList(),
-        val scanBudgetReached: Boolean = false
+        val scanBudgetReached: Boolean = false,
+        val visualFallbackUsed: Boolean = false
     )
 
     companion object {
@@ -546,3 +561,6 @@ class CompilationWorker(
 
     }
 }
+
+internal fun monotonicProgressPercent(previous: Int, requested: Int): Int =
+    maxOf(previous.coerceIn(0, 100), requested.coerceIn(0, 100))

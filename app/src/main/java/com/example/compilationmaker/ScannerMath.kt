@@ -2,6 +2,40 @@ package com.example.compilationmaker
 
 import kotlin.math.max
 
+data class VisualFallbackCandidate(val timestampMs: Long, val peakScore: Float, val visualChange: Boolean)
+
+class IncrementalTransitionLedger(private val dedupeMs: Long) {
+    private val confirmed = ArrayList<Long>()
+    val size: Int get() = confirmed.size
+
+    fun confirm(timestampMs: Long) {
+        val previous = confirmed.lastOrNull()
+        if (previous == null || timestampMs - previous > dedupeMs) {
+            confirmed += timestampMs
+        } else {
+            confirmed[confirmed.lastIndex] = minOf(previous, timestampMs)
+        }
+    }
+
+    fun snapshot(): List<Long> = confirmed.toList()
+}
+
+fun selectVisualFallbackTransitions(
+    candidates: List<VisualFallbackCandidate>,
+    visualThreshold: Float,
+    dedupeMs: Long
+): List<Long> {
+    val qualified = candidates
+        .filter { it.visualChange && it.peakScore >= visualThreshold * 1.15f }
+        .sortedBy { it.timestampMs }
+    val result = ArrayList<Long>()
+    for (candidate in qualified) {
+        val previous = result.lastOrNull()
+        if (previous == null || candidate.timestampMs - previous > dedupeMs) result += candidate.timestampMs
+    }
+    return result
+}
+
 fun generateCheckpointTimestamps(durationMs: Long, intervalMs: Long): List<Long> {
     require(durationMs >= 0L)
     val step = intervalMs.coerceAtLeast(1L)

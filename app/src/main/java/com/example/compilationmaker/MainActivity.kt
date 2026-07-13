@@ -2579,9 +2579,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 prefirstProbeMs = 2_000L,
                 maxVisualSamples = 4_200,
                 totalScanBudgetMs = 110_000L,
-                ocrBudgetMs = 35_000L,
                 maxCandidateWindows = 64,
-                ocrFrameWidthPx = 240,
+                ocrFrameWidthPx = 640,
                 stableMaxStepMs = 2_500L,
                 stableRampSamples = 4,
                 denseRefineStepMs = 250L,
@@ -2601,9 +2600,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 prefirstProbeMs = 1_500L,
                 maxVisualSamples = 7_500,
                 totalScanBudgetMs = 120_000L,
-                ocrBudgetMs = 48_000L,
                 maxCandidateWindows = 140,
-                ocrFrameWidthPx = experimentalDownscaleSize.coerceAtLeast(16),
+                ocrFrameWidthPx = max(640, experimentalDownscaleSize),
                 stableMaxStepMs = 2_000L,
                 stableRampSamples = 2,
                 denseRefineStepMs = 200L,
@@ -2698,7 +2696,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     progress(
                         CompilationPipelineState.COARSE_SCAN,
                         "Scanning timeline ${elapsedSeconds}s / ${totalSeconds}s (${percent}%, step ${currentStepMs}ms)",
-                        percent
+                        8 + (percent * 35 / 100)
                     )
 
                     val frame = decoded.bitmap
@@ -2820,7 +2818,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                         progress(
                             CompilationPipelineState.COARSE_SCAN,
                             "Scanning timeline ${elapsedSeconds}s / ${totalSeconds}s (${percent}%, step ${currentStepMs}ms)",
-                            percent
+                            8 + (percent * 35 / 100)
                         )
                         val frame = decoded.bitmap
                         try {
@@ -2955,13 +2953,20 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             }
 
             var hasCapturedFirstOne = false
-            val uniqueTransitions = ArrayList<Long>()
+            val confirmedLedger = IncrementalTransitionLedger(scanConfig.dedupeMs)
             val ocrPassStart = SystemClock.elapsedRealtime()
+            val overallConfirmationBudgetMs = ConfirmationTimeoutPolicy.overallMs(candidateWindowsForRefine.size)
+            val confirmationDeadlineMs = ocrPassStart + overallConfirmationBudgetMs
             AppLog.i(context, tag, "[finalize] beginning number confirmation thread=${Thread.currentThread().name}")
-            try {
-                withTimeout(scanConfig.ocrBudgetMs) {
             for ((index, candidate) in candidateWindowsForRefine.withIndex()) {
                 currentCoroutineContext().ensureActive()
+                val remainingOverallMs = confirmationDeadlineMs - SystemClock.elapsedRealtime()
+                if (remainingOverallMs <= 0L) {
+                    AppLog.w(context, tag, "[finalize] overall confirmation deadline reached after $index/${candidateWindowsForRefine.size}; preserving ${confirmedLedger.size} confirmed transitions")
+                    break
+                }
+                try {
+                    withTimeout(min(ConfirmationTimeoutPolicy.CANDIDATE_MS, remainingOverallMs)) {
                 val confirmationPercent = 46 + ((index + 1) * 7 / candidateWindowsForRefine.size.coerceAtLeast(1))
                 progress(CompilationPipelineState.REFINING, "Confirming transition ${index + 1} of ${candidateWindowsForRefine.size}", confirmationPercent)
                 val candidateStart = max(0L, candidate.startMs)
@@ -3073,21 +3078,18 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 if (transitionMs == null) {
                     rejectedCandidates++
                     transitionEvidence.add("No valid OCR timestamp found")
-                    continue
+                    AppLog.i(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=unconfirmed-no-text")
+                    return@withTimeout
                 }
                 val toNumber = transitionTargetNumber
                 if (toNumber == null) {
                     rejectedCandidates++
                     transitionEvidence.add("No confirmed target number")
-                    continue
+                    AppLog.i(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=rejected-no-target")
+                    return@withTimeout
                 }
                 val transitionAtMs = transitionMs
-                val shouldAdd = uniqueTransitions.lastOrNull()?.let { transitionAtMs - it > scanConfig.dedupeMs } ?: true
-                if (shouldAdd) {
-                    uniqueTransitions.add(transitionAtMs)
-                } else {
-                    uniqueTransitions[uniqueTransitions.lastIndex] = min(uniqueTransitions.last(), transitionAtMs)
-                }
+                confirmedLedger.confirm(transitionAtMs)
 
                 val cutStartMs = max(0L, transitionAtMs - 10_000L)
                 val cutEndMs = min(durationMs, transitionAtMs + 30_000L)
@@ -3121,33 +3123,47 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 AppLog.d(
                     context,
                     tag,
-                    "candidate=$index score=${candidate.peakScore} before=$beforeNumber after=$transitionTargetNumber @${formatMs(transitionAtMs)}"
+                    "[ocr candidate] index=$index timestamp=${candidate.seedMs} refined=$transitionAtMs score=${candidate.peakScore} before=$beforeNumber after=$transitionTargetNumber disposition=confirmed @${formatMs(transitionAtMs)}"
                 )
-            }
+                    }
+                } catch (timeout: TimeoutCancellationException) {
+                    rejectedCandidates++
+                    AppLog.w(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=unconfirmed-timeout scope=candidate limitMs=${min(ConfirmationTimeoutPolicy.CANDIDATE_MS, remainingOverallMs)}; preserving ${confirmedLedger.size} confirmations")
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    rejectedCandidates++
+                    AppLog.w(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=unconfirmed-mlkit-failure type=${failure::class.java.simpleName}", failure)
                 }
-            } catch (timeout: TimeoutCancellationException) {
-                AppLog.w(context, tag, "[finalize] OCR budget elapsed; continuing with ${uniqueTransitions.size} confirmed transitions", timeout)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                recordHandledWorkerFailure(context, tag, "[finalize] number confirmation failed", failure)
-                throw failure
             }
             AppLog.i(
                 context,
                 tag,
                 "[finalize] number confirmation completed in ${SystemClock.elapsedRealtime() - ocrPassStart} ms thread=${Thread.currentThread().name}"
             )
+            val uniqueTransitions = confirmedLedger.snapshot()
             AppLog.i(context, tag, "[finalize] confirmed transitions=${uniqueTransitions.size} thread=${Thread.currentThread().name}")
 
             val artifactPadMs = transitionStyle.edgePaddingMs
             AppLog.i(context, tag, "[clip plan] generating clips thread=${Thread.currentThread().name}")
-            progress(CompilationPipelineState.BUILDING_CLIP_PLAN, "Building clip plan from ${uniqueTransitions.size} confirmed transitions", 54)
+            val visualFallbackTransitions = if (uniqueTransitions.isEmpty()) {
+                selectVisualFallbackTransitions(
+                    candidateWindowsForRefine.map { VisualFallbackCandidate(it.seedMs, it.peakScore, it.reason == CandidateReason.VisualChange) },
+                    scanConfig.changeThreshold,
+                    scanConfig.dedupeMs
+                )
+            } else emptyList()
+            val clipTransitions = if (uniqueTransitions.isNotEmpty()) uniqueTransitions else visualFallbackTransitions
+            val clipSourceLabel = if (uniqueTransitions.isNotEmpty()) "OCR-confirmed" else "visually inferred"
+            if (visualFallbackTransitions.isNotEmpty()) {
+                AppLog.w(context, tag, "[clip plan] using controlled visual fallback transitions=${visualFallbackTransitions.size}; no OCR-confirmed transitions")
+            }
+            progress(CompilationPipelineState.BUILDING_CLIP_PLAN, "Building clip plan from ${clipTransitions.size} $clipSourceLabel transitions", 54)
             val clipPlanStarted = SystemClock.elapsedRealtime()
             val merged = try {
                 withTimeout(CLIP_PLAN_TIMEOUT_MS) {
                     runInterruptible(Dispatchers.Default) {
-                        val rawSegments = uniqueTransitions.map { t ->
+                        val rawSegments = clipTransitions.map { t ->
                             val requested = buildRequestedSegment(t, durationMs)
                             SegmentWindow(
                                 startMs = max(0L, requested.startMs - artifactPadMs),
@@ -3209,8 +3225,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 timing = timing,
                 acceptedTransitions = acceptedTransitions,
                 rejectedCandidates = rejectedCandidates,
-                fallbackUsed = fallbackUsed,
-                failureReason = null,
+                fallbackUsed = fallbackUsed || visualFallbackTransitions.isNotEmpty(),
+                failureReason = if (visualFallbackTransitions.isNotEmpty()) "OCR confirmed none; used high-confidence visual fallback" else null,
                 metrics = ScanMetrics(
                     scannerVersion = "v0.17.5-ocr-retry-direct-checkpoints",
                     wallClockMs = wallClockMs,
@@ -3240,7 +3256,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 durationMs,
                 candidateCount = candidateWindows.size,
                 candidateTimestampsMs = candidateWindows.map { it.seedMs },
-                scanBudgetReached = scanBudgetReached
+                scanBudgetReached = scanBudgetReached,
+                visualFallbackUsed = visualFallbackTransitions.isNotEmpty()
             )
         } finally {
             runCatching { frameProvider.close() }
@@ -3471,7 +3488,9 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         var decoded: DecodedFrame?
         val requestedFrameWidth = ocrFrameWidthPx.coerceAtLeast(0)
         val decodeMs = measureTimeMillis {
-            decoded = frameProvider.frameAt(cursorMs, requestedFrameWidth)
+            decoded = withTimeout(ConfirmationTimeoutPolicy.FRAME_EXTRACTION_MS) {
+                frameProvider.frameAt(cursorMs, requestedFrameWidth)
+            }
         }
         timing.decodeMs += decodeMs
         val localFrame = decoded?.bitmap ?: return null
@@ -3492,7 +3511,9 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             ) {
                 val retryWidth = if (requestedFrameWidth == 0) 480 else min(requestedFrameWidth * 2, 640)
                 val fallbackDecodeMs = measureTimeMillis {
-                    decoded = frameProvider.frameAt(cursorMs, retryWidth)
+                    decoded = withTimeout(ConfirmationTimeoutPolicy.FRAME_EXTRACTION_MS) {
+                        frameProvider.frameAt(cursorMs, retryWidth)
+                    }
                 }
                 timing.decodeMs += fallbackDecodeMs
                 val fallbackFrame = decoded?.bitmap
@@ -3637,7 +3658,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             if (frame.width <= 0 || frame.height <= 0) {
                 return null
             }
-            cropToWindow(frame, scanWindow)
+            cropToWindowForOcr(frame, scanWindow)
         } catch (e: Exception) {
             AppLog.w(context, tag, "Failed to crop scan area", e)
             null
@@ -3703,7 +3724,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         val startedCropMs = System.currentTimeMillis()
         val corner = try {
             if (normalizedFrame.width <= 0 || normalizedFrame.height <= 0) return NumberDetectionResult(null, 0L, 0L, 0L, 0f)
-            cropToWindow(normalizedFrame, scanWindow)
+            cropToWindowForOcr(normalizedFrame, scanWindow)
         } catch (e: Exception) {
             AppLog.w(context, tag, "Failed to crop scan area", e)
             if (normalizedFrame !== frame) {
@@ -3715,24 +3736,28 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
 
         val preprocessStartMs = System.currentTimeMillis()
         val scaled = scaleBitmapForOcr(corner)
-        val gray = grayscaleBitmap(scaled)
-        val threshold = binarizeForDigitRecognition(gray, invert = false)
-        val inverted = binarizeForDigitRecognition(gray, invert = true)
-        val preprocessMs = System.currentTimeMillis() - preprocessStartMs
+        var preprocessMs = System.currentTimeMillis() - preprocessStartMs
+        val temporaries = ArrayList<Bitmap>(3)
 
         return try {
-            val attempts = listOf(
-                scaled to "raw",
-                gray to "grayscale",
-                threshold to "threshold",
-                inverted to "inverted-threshold"
+            val attempts = listOf<(Bitmap) -> Pair<Bitmap, String>>(
+                { source -> source to "raw" },
+                { source -> grayscaleBitmap(source).also(temporaries::add) to "grayscale" },
+                { source -> binarizeForDigitRecognition(source, invert = false).also(temporaries::add) to "threshold" },
+                { source -> binarizeForDigitRecognition(source, invert = true).also(temporaries::add) to "inverted-threshold" }
             )
             var best: DigitRecognition? = null
             var totalOcrMs = 0L
-            for ((bitmap, branch) in attempts) {
+            for ((attemptIndex, prepare) in attempts.withIndex()) {
+                val prepareStarted = System.currentTimeMillis()
+                val (bitmap, branch) = prepare(scaled)
+                preprocessMs += System.currentTimeMillis() - prepareStarted
+                AppLog.d(context, tag, "[ocr] prepared dimensions=${bitmap.width}x${bitmap.height} variant=$branch")
                 val branchStart = System.currentTimeMillis()
                 val detection = digitRecognizer.recognize(bitmap, branch)
-                totalOcrMs += System.currentTimeMillis() - branchStart
+                val branchDuration = System.currentTimeMillis() - branchStart
+                totalOcrMs += branchDuration
+                AppLog.d(context, tag, "[ocr] variant=$branch durationMs=$branchDuration status=${detection.status} parsed=${detection.value ?: "none"}")
                 val candidateScore = when {
                     detection.value == null -> detection.confidence * 0.35f
                     detection.rawText.length <= 3 -> detection.confidence + 0.1f
@@ -3749,9 +3774,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     best = detection
                 }
                 val chosen = best
-                if (chosen.value != null && chosen.confidence >= 0.95f) {
-                    break
-                }
+                if (!shouldTryNextOcrVariant(attemptIndex, detection)) break
+                if (attemptIndex == 2 && chosen.value != null) break
             }
             val chosen = best ?: DigitRecognition(null, "", 0f, "raw")
             NumberDetectionResult(chosen.value, cropMs, preprocessMs, totalOcrMs, chosen.confidence, chosen.rawText, chosen.branch)
@@ -3767,15 +3791,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             if (scaled != corner) {
                 scaled.recycle()
             }
-            if (gray !== scaled) {
-                gray.recycle()
-            }
-            if (threshold !== gray) {
-                threshold.recycle()
-            }
-            if (inverted !== gray) {
-                inverted.recycle()
-            }
+            temporaries.asReversed().forEach { bitmap -> if (!bitmap.isRecycled) bitmap.recycle() }
             corner.recycle()
             if (normalizedFrame !== frame) {
                 normalizedFrame.recycle()
@@ -4415,17 +4431,21 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         return Bitmap.createBitmap(frame, rect.left, rect.top, rect.width, rect.height)
     }
 
+    private fun cropToWindowForOcr(frame: Bitmap, scanWindow: ScanWindow): Bitmap {
+        val rect = SafeVisionImage.computeSafeCropRect(frame.width, frame.height, scanWindow)
+            ?: throw IllegalArgumentException("Invalid OCR analysis frame ${frame.width}x${frame.height}")
+        val padX = max(2, (rect.width * OcrPreparationPolicy.ROI_PADDING_FRACTION).roundToInt())
+        val padY = max(2, (rect.height * OcrPreparationPolicy.ROI_PADDING_FRACTION).roundToInt())
+        val left = max(0, rect.left - padX)
+        val top = max(0, rect.top - padY)
+        val right = min(frame.width, rect.left + rect.width + padX)
+        val bottom = min(frame.height, rect.top + rect.height + padY)
+        return Bitmap.createBitmap(frame, left, top, right - left, bottom - top)
+    }
+
     private fun scaleBitmapForOcr(input: Bitmap): Bitmap {
-        val maxSide = 320
-        if (input.width >= MIN_INPUT_IMAGE_DIMENSION && input.height >= MIN_INPUT_IMAGE_DIMENSION && input.width <= maxSide && input.height <= maxSide) return input
-        val upscale = max(
-            MIN_INPUT_IMAGE_DIMENSION.toFloat() / input.width.coerceAtLeast(1),
-            MIN_INPUT_IMAGE_DIMENSION.toFloat() / input.height.coerceAtLeast(1)
-        )
-        val downscale = min(maxSide.toFloat() / input.width.coerceAtLeast(1), maxSide.toFloat() / input.height.coerceAtLeast(1))
-        val scale = if (input.width < MIN_INPUT_IMAGE_DIMENSION || input.height < MIN_INPUT_IMAGE_DIMENSION) upscale else downscale
-        val targetW = max(MIN_INPUT_IMAGE_DIMENSION, (input.width * scale).roundToInt())
-        val targetH = max(MIN_INPUT_IMAGE_DIMENSION, (input.height * scale).roundToInt())
+        val (targetW, targetH) = OcrPreparationPolicy.targetSize(input.width, input.height)
+        if (targetW == input.width && targetH == input.height) return input
         return Bitmap.createScaledBitmap(input, targetW, targetH, true)
     }
 
@@ -4709,7 +4729,8 @@ data class ScanFindResult(
     val videoDurationMs: Long,
     val candidateCount: Int = 0,
     val candidateTimestampsMs: List<Long> = emptyList(),
-    val scanBudgetReached: Boolean = false
+    val scanBudgetReached: Boolean = false,
+    val visualFallbackUsed: Boolean = false
 )
 
 data class VerifiedCompilationOutput(
@@ -4862,7 +4883,6 @@ private data class ChangeMapConfig(
     val prefirstProbeMs: Long,
     val maxVisualSamples: Int,
     val totalScanBudgetMs: Long,
-    val ocrBudgetMs: Long,
     val maxCandidateWindows: Int,
     val ocrFrameWidthPx: Int,
     val stableMaxStepMs: Long,

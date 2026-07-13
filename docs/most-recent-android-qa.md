@@ -3,9 +3,9 @@
 ## Current test
 
 - Status: BLOCKED — Phase 1 A→output→B validation has not yet run.
-- App/version: 0.17.11 (versionCode 43), pending release tag.
+- App/version: 0.17.12 (versionCode 44), OCR-confirmation fix candidate.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
-- Release APK SHA-256: pending v0.17.11 release asset.
+- Release APK SHA-256: pending v0.17.12 release asset.
 - Video A SHA-256: `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`
 - Video B SHA-256: `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`
 
@@ -24,7 +24,14 @@
 - Manual hosted-QA dispatch now resolves the latest published release rather than an obsolete hard-coded tag.
 - The signed `CompilationMaker-v0.17.10.apk` release asset was published and verified reachable before this update feed was promoted.
 - Hosted QA run `29236205919` exposed a false pass: the test could not find Video A in MediaStore, but the runner continued after the instrumentation failure. The runner now fails for missing MediaStore visibility and preserves the instrumentation exit status.
+- OCR confirmation now uses per-frame, per-attempt, per-candidate, and candidate-scaled overall deadlines; confirmed transitions are stored incrementally.
+- OCR crops are padded and aspect-preservingly scaled to at least 128 px, variants are prepared lazily, ML Kit empty/error results stay candidate-local, and strong visual candidates provide a labeled fallback clip plan.
+- Scan progress maps to the first 43% of total-job progress and Worker progress is monotonic across phase changes.
+- Release-signed API 35 `VideoPickerHandoffTest` passed with the real staged Video A MediaStore URI.
+- Release-signed three-minute checkpoint Video A test completed in visual-fallback mode: 2 inferred transitions, 2 clips, verified 94,013 ms output, 902,471 bytes, and Worker `SUCCESS`.
+- OCR used 128x144 prepared raw inputs; observed attempts completed in approximately 140-170 ms and stopped after a valid parsed digit.
+- The legacy UI runner's Downloads-provider URI failed source setup on this emulator; the deterministic end-to-end instrumentation uses the readable MediaStore URI and now covers scan through verified export.
 
 ## First unresolved causal failure
 
-Make Video A reliably visible to the hosted API 35 MediaStore query, then rerun the deterministic picker/Worker handoff. No scanner, export, or A/B correctness claim is made by this test.
+Run the same v0.17.12 release test in hosted QA and complete the host-only Video B comparison; local Video A export is verified.

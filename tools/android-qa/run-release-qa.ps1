@@ -24,9 +24,15 @@ function Adb([string[]]$AdbArgs) {
 
 function Dump-Ui {
     $remote = "/sdcard/qa-window.xml"
-    Adb @("shell", "uiautomator", "dump", $remote) | Out-Null
-    $xml = (& $adb -s $Serial exec-out cat $remote | Out-String)
-    [xml]$xml
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        $dumpOutput = (& $adb -s $Serial shell uiautomator dump $remote 2>&1) -join "`n"
+        if ($LASTEXITCODE -eq 0 -and $dumpOutput -notmatch "null root node") {
+            $xml = (& $adb -s $Serial exec-out cat $remote | Out-String)
+            if ($LASTEXITCODE -eq 0 -and $xml -match "<hierarchy") { return [xml]$xml }
+        }
+        if ($attempt -lt 5) { Start-Sleep -Milliseconds 750 }
+    }
+    throw "Unable to capture a non-empty Android UI hierarchy after 5 attempts."
 }
 
 function Find-UiNode([xml]$Ui, [string]$ResourceId, [string]$TextContains) {
@@ -114,6 +120,7 @@ function Dismiss-SystemOverlays {
         Start-Sleep -Milliseconds 300
         $ui = Dump-Ui
         $gotIt = Find-UiNode $ui "android:id/ok" "Got it"
+        if (-not $gotIt) { $gotIt = Find-UiNode $ui "android:id/button1" "OK" }
         if ($gotIt) { Tap-UiNode $gotIt } else { return }
     }
 }

@@ -92,9 +92,9 @@ internal fun decidePipelineTerminalOutcome(
 
     if (clipCount <= 0) {
         return PipelineTerminalDecision(
-            kind = PipelineTerminalKind.FAILURE,
-            stage = PipelineTerminalStage.BUILDING_CLIP_PLAN,
-            message = "No clips were generated from confirmed transitions"
+            kind = PipelineTerminalKind.NO_RESULTS,
+            stage = PipelineTerminalStage.FINALIZING,
+            message = "Scan completed with no usable confirmed or visual transitions"
         )
     }
 
