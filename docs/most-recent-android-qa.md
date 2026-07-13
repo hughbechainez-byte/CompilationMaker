@@ -3,9 +3,9 @@
 ## Current test
 
 - Status: PARTIAL PASS — release-signed Video A scan/fallback/export/verification passed; hosted QA and host-only Video B comparison remain.
-- App/version: 0.17.13 (versionCode 45), hosted-QA reliability candidate based on OCR fix commit `585e139`.
+- App/version: 0.17.13 (versionCode 45), release tag `v0.17.13`, OCR fix commit `585e139`, QA commit `d297a7b`.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
-- Release APK SHA-256: pending v0.17.13 release asset.
+- Published release APK SHA-256: `74A8410693ACE928B12E4895072130679BDC99140AF093148385F6FED8D75D91`
 - Video A SHA-256: `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`
 - Video B SHA-256: `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`
 
