@@ -119,6 +119,18 @@ function Select-Video([string]$Title) {
     }
     Tap-UiNode $select "select video button"
     Dismiss-SystemOverlays
+    # Prefer the local Downloads root. Recent may be backed by Google Photos,
+    # whose click action opens a preview instead of returning a document URI.
+    $roots = Find-UiNode (Dump-Ui) $null "Show roots"
+    if ($roots) {
+        Tap-UiNode $roots "picker roots"
+        for ($i = 0; $i -lt 10; $i++) {
+            Start-Sleep -Milliseconds 500
+            $ui = Dump-Ui
+            $downloads = Find-UiNode $ui $null "Downloads"
+            if ($downloads) { Tap-UiNode $downloads "Downloads root"; break }
+        }
+    }
     for ($i = 0; $i -lt 8; $i++) {
         Start-Sleep -Seconds 1
         Dismiss-SystemOverlays
