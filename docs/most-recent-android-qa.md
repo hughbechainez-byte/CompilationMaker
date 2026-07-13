@@ -2,7 +2,7 @@
 
 ## Current test
 
-- Status: PASS WITH LIMITATION — release-signed Video A scan/fallback/export/verification and hosted API 35 picker/Worker QA passed; host-only Video B comparison remains.
+- Status: FAIL — the release-signed scan/export runs, but the generated compilation does not match Video B.
 - App/version: 0.17.13 (versionCode 45), release tag `v0.17.13`, OCR fix commit `585e139`, QA commit `d297a7b`.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
 - Published release APK SHA-256: `74A8410693ACE928B12E4895072130679BDC99140AF093148385F6FED8D75D91`
@@ -34,7 +34,10 @@
 - Hosted run `29240352815` proved `adb` can exit 0 while instrumentation reports `INSTRUMENTATION_CODE: -1`; the runner now parses failure markers, and the test imports the staged fixture into MediaStore under test-only all-files access when scanning is unavailable.
 - Hosted run `29241217097` passed the actual test (`OK (1 test)`, 0 failed) and proved final instrumentation code `-1` is Android's success result; the runner now requires `OK` plus status 0 and rejects only real failure markers/status -2.
 - Hosted run `29241640483` passed end-to-end as an authoritative workflow against the published v0.17.13 APK and staged Video A hash.
+- Host comparison pulled the generated output without placing Video B on-device. Output was 94.013333 seconds, 902,471 bytes, H.264/AAC 1280x720 at 2 fps; Video B is 400.000000 seconds, 4,495,038 bytes with the same stream shape.
+- The run found only candidates at 180 and 900 seconds, exported 2 visually inferred clips, and therefore failed the required ten-clip/400-second gate before SSIM or audio-correlation scoring.
+- The release instrumentation now requires exactly ten Video A clips so this incomplete result cannot be reported as an end-to-end pass again.
 
 ## First unresolved causal failure
 
-Complete the host-only Video B comparison. Video A app-side scan, fallback clip generation, export, verification, and hosted picker/Worker handoff are verified.
+The 180-second coarse checkpoint scan found only 2 of the required 10 transitions. The scanner must independently recover all ten transitions before exact export and A/B scoring can pass.

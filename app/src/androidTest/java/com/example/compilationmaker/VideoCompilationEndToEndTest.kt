@@ -68,9 +68,11 @@ class VideoCompilationEndToEndTest {
             }
             val finished = requireNotNull(record)
             assertEquals(finished.errorMessage, CompilationPipelineState.SUCCEEDED, finished.state)
-            assertTrue("Expected at least one exported clip", finished.clipCount > 0)
-            assertTrue("Expected verified output file", File(finished.outputPath).isFile)
-            assertTrue("Expected non-empty output", File(finished.outputPath).length() > 0L)
+            val output = File(finished.outputPath)
+            assertTrue("Expected verified output file", output.isFile)
+            assertTrue("Expected non-empty output", output.length() > 0L)
+            output.copyTo(File("/sdcard/Download/compilation_output_A.mp4"), overwrite = true)
+            assertEquals("Video A must produce ten clips", 10, finished.clipCount)
         }
     }
 
