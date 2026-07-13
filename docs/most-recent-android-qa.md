@@ -3,7 +3,7 @@
 ## Current test
 
 - Status: BLOCKED — Phase 1 A→output→B validation has not yet run.
-- App/version: 0.17.6 (versionCode 38), pending release commit.
+- App/version: 0.17.6 (versionCode 38), app commit `f66bb77`.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
 - Release APK SHA-256: `7BC6662CDA8A6D32ED1BBADB5FC33AC723D0F0F879D76CE5B141E1C39C141DD9`
 - Video A SHA-256: `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`
