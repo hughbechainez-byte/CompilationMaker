@@ -2,7 +2,7 @@
 
 ## Current test
 
-- Status: PARTIAL PASS — release-signed Video A scan/fallback/export/verification passed; hosted QA and host-only Video B comparison remain.
+- Status: PASS WITH LIMITATION — release-signed Video A scan/fallback/export/verification and hosted API 35 picker/Worker QA passed; host-only Video B comparison remains.
 - App/version: 0.17.13 (versionCode 45), release tag `v0.17.13`, OCR fix commit `585e139`, QA commit `d297a7b`.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
 - Published release APK SHA-256: `74A8410693ACE928B12E4895072130679BDC99140AF093148385F6FED8D75D91`
@@ -33,7 +33,8 @@
 - The legacy UI runner's Downloads-provider URI failed source setup on this emulator; the deterministic end-to-end instrumentation uses the readable MediaStore URI and now covers scan through verified export.
 - Hosted run `29240352815` proved `adb` can exit 0 while instrumentation reports `INSTRUMENTATION_CODE: -1`; the runner now parses failure markers, and the test imports the staged fixture into MediaStore under test-only all-files access when scanning is unavailable.
 - Hosted run `29241217097` passed the actual test (`OK (1 test)`, 0 failed) and proved final instrumentation code `-1` is Android's success result; the runner now requires `OK` plus status 0 and rejects only real failure markers/status -2.
+- Hosted run `29241640483` passed end-to-end as an authoritative workflow against the published v0.17.13 APK and staged Video A hash.
 
 ## First unresolved causal failure
 
-Run the same v0.17.12 release test in hosted QA and complete the host-only Video B comparison; local Video A export is verified.
+Complete the host-only Video B comparison. Video A app-side scan, fallback clip generation, export, verification, and hosted picker/Worker handoff are verified.
