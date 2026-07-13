@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.5",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.5",
+  "version": "v0.17.6",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.6",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.5/CompilationMaker-v0.17.5.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.6/CompilationMaker-v0.17.6.apk"
   },
-  "notes": "Hardened bundled ML Kit OCR confirmation with explicit Task success/failure/cancellation callbacks, preflight readiness, one controlled timeout retry, candidate-local OCR failure handling, baseline-safe transition detection, and direct sparse checkpoint sampling. Existing foreground-service, WorkManager UUID persistence, KEEP policy, ROI pause, lifecycle restoration, and finalization logging are preserved.",
+  "notes": "Test build: deterministic Android picker QA, secret-based rotated signing, and Ubuntu emulator release verification. Installations signed by the old certificate must uninstall and reinstall before installing this release.",
   "updates": [
+    {
+      "version": "v0.17.6",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.6",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.6/CompilationMaker-v0.17.6.apk",
+      "notes": "Test build: deterministic Android picker QA, secret-based rotated signing, and Ubuntu emulator release verification. Installations signed by the old certificate must uninstall and reinstall before installing this release."
+    },
     {
       "version": "v0.17.5",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.5",
