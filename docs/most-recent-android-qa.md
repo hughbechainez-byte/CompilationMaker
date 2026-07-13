@@ -3,9 +3,9 @@
 ## Current test
 
 - Status: BLOCKED — Phase 1 A→output→B validation has not yet run.
-- App/version: 0.17.10 (versionCode 42), pending release tag.
+- App/version: 0.17.10 (versionCode 42), release tag `v0.17.10`.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
-- Release APK SHA-256: pending v0.17.10 release asset.
+- Release APK SHA-256: `ADBFE95A53B109C18CE22813CC0090061CDB43B62FF0A4C800B032F6C1E3353D`
 - Video A SHA-256: `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`
 - Video B SHA-256: `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`
 
@@ -22,6 +22,7 @@
 - Hosted QA was blocked by disabled KVM and a shared-storage fixture push failure; the workflow now enables `/dev/kvm` access and the runner creates/retries the Downloads staging path.
 - The signed `CompilationMaker-v0.17.9.apk` release asset was published and verified reachable before this update feed was promoted.
 - Manual hosted-QA dispatch now resolves the latest published release rather than an obsolete hard-coded tag.
+- The signed `CompilationMaker-v0.17.10.apk` release asset was published and verified reachable before this update feed was promoted.
 
 ## First unresolved causal failure
 
