@@ -2,10 +2,10 @@
 
 ## Current test
 
-- Status: FAIL — the release-signed scan/export runs, but the generated compilation does not match Video B.
-- App/version: 0.17.13 (versionCode 45), release tag `v0.17.13`, OCR fix commit `585e139`, QA commit `d297a7b`.
+- Status: FAIL — the exact released APK continues in background but still does not produce the required Video A compilation.
+- App/version: 0.17.14 (versionCode 46), release tag `v0.17.14`, scanner/background commit `34eb66d`.
 - Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
-- Published release APK SHA-256: `74A8410693ACE928B12E4895072130679BDC99140AF093148385F6FED8D75D91`
+- Published release APK SHA-256: `EF28FB1DD9515BFCEC09775F53408D8E2ED842E1C77831584F2E49E2607F6CE5`
 - Video A SHA-256: `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`
 - Video B SHA-256: `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`
 
@@ -38,7 +38,9 @@
 - The run found only candidates at 180 and 900 seconds, exported 2 visually inferred clips, and therefore failed the required ten-clip/400-second gate before SSIM or audio-correlation scoring.
 - The release instrumentation now requires exactly ten Video A clips so this incomplete result cannot be reported as an end-to-end pass again.
 - A follow-up 60-second checkpoint experiment made all 61 required coarse retrievals and found 14 candidate intervals, but OCR accepted only two incorrect `9 -> 6` transitions. This confirms candidate coverage and stable-state/OCR classification are separate blockers.
+- Exact published `v0.17.14` passed `BackgroundCompilationContinuationTest`: after leaving the app, its foreground WorkManager task remained active with persisted progress. The activity enters picture-in-picture with a live progress banner while work is active.
+- Exact published `v0.17.14` retained full checkpoint intervals and produced 14 visual candidates, but the 1,280px OCR/five-sample confirmation path timed out candidate-local calls and confirmed zero states. It exported a non-passing visual fallback: 14 clips, 655.000 seconds, 6,443,583 bytes.
 
 ## First unresolved causal failure
 
-The 60-second coarse pass yields 14 candidates, but the current narrow-window confirmation accepts only two incorrect `9 -> 6` states instead of ten sequential transitions. Implement the plan's full-interval investigation and five-sample stable-state classifier before exact export and A/B scoring.
+Build the persistent stable number-state timeline at 60-second checkpoints using bounded five-sample OCR evidence, then derive only semantic `null -> 1` / `N -> N+1` transitions. Visual fallback must not yield a primary-fixture success.
