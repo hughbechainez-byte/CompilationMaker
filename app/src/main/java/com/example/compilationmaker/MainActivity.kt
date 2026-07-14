@@ -2726,7 +2726,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                         val isDirectCheckpointScan = frameStepMs >= 60_000L
                         if (isDirectCheckpointScan) {
                             val state = detectStableCheckpointState(
-                                frameProvider, cursorMs, scanWindow, sourceRotationDegrees,
+                                retrieverFrameProvider, cursorMs, scanWindow, sourceRotationDegrees,
                                 640, durationMs, timing
                             )
                             ocrCalls += state.calls
@@ -2871,7 +2871,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                             val isDirectCheckpointScan = frameStepMs >= 60_000L
                             if (isDirectCheckpointScan) {
                                 val state = detectStableCheckpointState(
-                                    frameProvider, cursorMs, scanWindow, sourceRotationDegrees,
+                                    retrieverFrameProvider, cursorMs, scanWindow, sourceRotationDegrees,
                                     640, durationMs, timing
                                 )
                                 ocrCalls += state.calls
@@ -3453,10 +3453,15 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         var calls = 0
         for (sampleMs in sampleTimes) {
             currentCoroutineContext().ensureActive()
-            val value = detectNumberAt(
+            val evidence = detectNumberEvidenceAt(
                 frameProvider, sampleMs, scanWindow, sourceRotationDegrees, ocrFrameWidthPx, timing
             )
-            votes += StableStateVote(sampleMs, value)
+            votes += StableStateVote(
+                timestampMs = sampleMs,
+                value = evidence.value,
+                decodedTimestampMs = evidence.decodedTimestampMs,
+                status = evidence.status
+            )
             calls++
         }
         return TimelineStateDetection(classifyStableNumberState(votes), calls)
@@ -3676,7 +3681,18 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         sourceRotationDegrees: Int,
         ocrFrameWidthPx: Int = 0,
         timing: ScanTimingSummary
-    ): Int? {
+    ): Int? = detectNumberEvidenceAt(
+        frameProvider, cursorMs, scanWindow, sourceRotationDegrees, ocrFrameWidthPx, timing
+    ).value
+
+    private suspend fun detectNumberEvidenceAt(
+        frameProvider: FrameProvider,
+        cursorMs: Long,
+        scanWindow: ScanWindow,
+        sourceRotationDegrees: Int,
+        ocrFrameWidthPx: Int = 0,
+        timing: ScanTimingSummary
+    ): NumberDetectionEvidence {
         var decoded: DecodedFrame?
         val requestedFrameWidth = ocrFrameWidthPx.coerceAtLeast(0)
         val decodeMs = measureTimeMillis {
@@ -3685,7 +3701,9 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             }
         }
         timing.decodeMs += decodeMs
-        val localFrame = decoded?.bitmap ?: return null
+        val localDecoded = decoded ?: return NumberDetectionEvidence(null, null, OcrCandidateStatus.INVALID_FRAME.name)
+        val localFrame = localDecoded.bitmap
+        var selectedDecodedTimestampMs = localDecoded.timeMs
 
         suspend fun detectWithFrameWidth(candidateFrame: Bitmap): NumberDetectionResult {
             val detection = detectCornerNumberWithTimings(candidateFrame, scanWindow, sourceRotationDegrees)
@@ -3717,10 +3735,11 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     }
                     if (fallbackDetection.confidence >= detection.confidence) {
                         detection = fallbackDetection
+                        selectedDecodedTimestampMs = decoded?.timeMs ?: selectedDecodedTimestampMs
                     }
                 }
             }
-            detection.value
+            NumberDetectionEvidence(detection.value, selectedDecodedTimestampMs, detection.status.name)
         } finally {
             localFrame.recycle()
         }
@@ -4583,7 +4602,9 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                             checkpoint.state.votes.forEach { vote ->
                                 put(JSONObject().apply {
                                     put("timestampMs", vote.timestampMs)
+                                    put("decodedTimestampMs", vote.decodedTimestampMs)
                                     put("number", vote.value)
+                                    put("status", vote.status)
                                 })
                             }
                         })
@@ -5029,6 +5050,12 @@ private data class TimedDetection(
     val value: Int?,
     val calls: Int,
     val timeMs: Long?
+)
+
+private data class NumberDetectionEvidence(
+    val value: Int?,
+    val decodedTimestampMs: Long?,
+    val status: String
 )
 
 private data class TimelineStateDetection(

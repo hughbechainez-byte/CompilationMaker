@@ -108,4 +108,18 @@ class OcrConfirmationPolicyTest {
         assertTrue(threshold.threshold >= 8f)
         assertTrue(threshold.threshold < 14f)
     }
+
+    @Test
+    fun timedOutOrInvalidNullVotesCannotBecomeStableNull() {
+        val unstable = classifyStableNumberState(
+            listOf(
+                StableStateVote(0L, null, 0L, "OCR_TIMEOUT"),
+                StableStateVote(500L, null, 500L, "INVALID_FRAME"),
+                StableStateVote(1_000L, null, 1_000L, "OCR_TIMEOUT"),
+                StableStateVote(1_500L, null, 1_500L, "NO_TRANSITION"),
+                StableStateVote(2_000L, null, 2_000L, "NO_TRANSITION")
+            )
+        )
+        assertFalse(unstable.stable)
+    }
 }
