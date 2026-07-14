@@ -2,14 +2,14 @@
   "version": "v0.17.20",
   "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.20",
   "apk": {
-    "url": ""
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.20/CompilationMaker-v0.17.20.apk"
   },
   "notes": "Test build: uses exactly 61 Video A checkpoints, reuses coarse endpoint states, and bounds visual-only recursive OCR while preserving deeper semantic bisection. Phase 1 fixture validation remains in progress.",
   "updates": [
     {
       "version": "v0.17.20",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.20",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.20/app-release.apk",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.20/CompilationMaker-v0.17.20.apk",
       "notes": "Test build: uses exactly 61 Video A checkpoints, reuses coarse endpoint states, and bounds visual-only recursive OCR while preserving deeper semantic bisection. Phase 1 fixture validation remains in progress."
     },
     {
