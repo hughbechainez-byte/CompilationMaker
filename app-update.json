@@ -2,7 +2,7 @@
   "version": "v0.17.16",
   "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.16",
   "apk": {
-    "url": ""
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.16/app-release.apk"
   },
   "notes": "Checkpoint state evidence now uses bounded retriever reads, preserves actual decoded timestamps and OCR status, and reserves MediaCodec for localized refinement.",
   "updates": [
