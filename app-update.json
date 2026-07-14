@@ -1,16 +1,22 @@
 {
-  "version": "v0.17.17",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.17",
+  "version": "v0.17.18",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.18",
   "apk": {
     "url": ""
   },
-  "notes": "Confirmation now continues through every retained semantic interval and rejects non-sequential readings at final acceptance.",
+  "notes": "One-minute state timelines now receive a complete-plan budget and no longer re-decode identical maximum-width OCR frames.",
   "updates": [
+    {
+      "version": "v0.17.18",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.18",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.18/app-release.apk",
+      "notes": "One-minute state timelines now receive a complete-plan budget and no longer re-decode identical maximum-width OCR frames."
+    },
     {
       "version": "v0.17.17",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.17",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.17/app-release.apk",
-      "notes": "Confirmation now continues through every retained semantic interval and rejects non-sequential readings at final acceptance."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.16...v0.17.17"
     },
     {
       "version": "v0.17.16",
@@ -119,12 +125,6 @@
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.4",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.4/CompilationMaker-v0.16.4.apk",
       "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.16.3...v0.16.4"
-    },
-    {
-      "version": "v0.16.3",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.3",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.3/CompilationMaker-v0.16.3.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.16.2...v0.16.3"
     }
   ]
 }
