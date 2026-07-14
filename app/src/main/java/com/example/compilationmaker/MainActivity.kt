@@ -2596,7 +2596,9 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 dedupeMs = 900L,
                 prefirstProbeMs = 2_000L,
                 maxVisualSamples = 4_200,
-                totalScanBudgetMs = 110_000L,
+                // The one-minute profile is a fixed 61-point state timeline, not a best-effort
+                // visual sweep.  Allow it to complete its required evidence collection.
+                totalScanBudgetMs = if (frameStepMs >= 60_000L) 600_000L else 110_000L,
                 maxCandidateWindows = 64,
                 ocrFrameWidthPx = 640,
                 stableMaxStepMs = 2_500L,
@@ -3717,22 +3719,26 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 (detection.confidence < 0.85f && requestedFrameWidth in 1..480)
             ) {
                 val retryWidth = if (requestedFrameWidth == 0) 480 else min(requestedFrameWidth * 2, 640)
-                val fallbackDecodeMs = measureTimeMillis {
-                    decoded = withTimeout(ConfirmationTimeoutPolicy.FRAME_EXTRACTION_MS) {
-                        frameProvider.frameAt(cursorMs, retryWidth)
+                // At the maximum OCR width a retry would be the same seek and the same pixels;
+                // it only burns the direct-timeline budget without adding evidence.
+                if (retryWidth > requestedFrameWidth) {
+                    val fallbackDecodeMs = measureTimeMillis {
+                        decoded = withTimeout(ConfirmationTimeoutPolicy.FRAME_EXTRACTION_MS) {
+                            frameProvider.frameAt(cursorMs, retryWidth)
+                        }
                     }
-                }
-                timing.decodeMs += fallbackDecodeMs
-                val fallbackFrame = decoded?.bitmap
-                if (fallbackFrame != null && fallbackFrame !== localFrame) {
-                    val fallbackDetection = try {
-                        detectWithFrameWidth(fallbackFrame)
-                    } finally {
-                        fallbackFrame.recycle()
-                    }
-                    if (fallbackDetection.confidence >= detection.confidence) {
-                        detection = fallbackDetection
-                        selectedDecodedTimestampMs = decoded?.timeMs ?: selectedDecodedTimestampMs
+                    timing.decodeMs += fallbackDecodeMs
+                    val fallbackFrame = decoded?.bitmap
+                    if (fallbackFrame != null && fallbackFrame !== localFrame) {
+                        val fallbackDetection = try {
+                            detectWithFrameWidth(fallbackFrame)
+                        } finally {
+                            fallbackFrame.recycle()
+                        }
+                        if (fallbackDetection.confidence >= detection.confidence) {
+                            detection = fallbackDetection
+                            selectedDecodedTimestampMs = decoded?.timeMs ?: selectedDecodedTimestampMs
+                        }
                     }
                 }
             }
