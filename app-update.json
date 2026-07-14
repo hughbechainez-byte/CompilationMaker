@@ -1,76 +1,82 @@
 {
-  "version": "v0.17.15",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.15",
+  "version": "v0.17.16",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.16",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.15/CompilationMaker-v0.17.15.apk"
+    "url": ""
   },
-  "notes": "Scanner now builds a five-sample stable number-state timeline at 60-second checkpoints, retains complete candidate intervals, rejects non-sequential state changes, and records checkpoint votes in scan evidence.",
+  "notes": "Checkpoint state evidence now uses bounded retriever reads, preserves actual decoded timestamps and OCR status, and reserves MediaCodec for localized refinement.",
   "updates": [
+    {
+      "version": "v0.17.16",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.16",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.16/app-release.apk",
+      "notes": "Checkpoint state evidence now uses bounded retriever reads, preserves actual decoded timestamps and OCR status, and reserves MediaCodec for localized refinement."
+    },
     {
       "version": "v0.17.15",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.15",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.15/CompilationMaker-v0.17.15.apk",
-      "notes": "Stable checkpoint state timeline, complete candidate intervals, adaptive visual threshold, semantic rejection, and structured vote evidence."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.14...v0.17.15"
     },
     {
       "version": "v0.17.14",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.14",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.14/CompilationMaker-v0.17.14.apk",
-      "notes": "Full checkpoint evidence, five-sample stable-state voting, bounded boundary refinement, and background picture-in-picture progress."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.13...v0.17.14"
     },
     {
       "version": "v0.17.13",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.13",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.13/CompilationMaker-v0.17.13.apk",
-      "notes": "OCR confirmation fix plus authoritative hosted QA: layered timeouts, padded 128px inputs, incremental results, labeled visual fallback clips, monotonic progress, and reliable staged-fixture MediaStore import."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.12...v0.17.13"
     },
     {
       "version": "v0.17.12",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.12",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.12/CompilationMaker-v0.17.12.apk",
-      "notes": "Fixes OCR confirmation with layered timeouts, padded 128px inputs, incremental results, labeled visual fallback clips, and monotonic progress. Release-signed Video A produced and verified a 94-second compilation on API 35."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.11...v0.17.12"
     },
     {
       "version": "v0.17.11",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.11",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.11/CompilationMaker-v0.17.11.apk",
-      "notes": "Test build: hosted QA now fails correctly when fixture staging or instrumentation fails instead of producing a false green result."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.10...v0.17.11"
     },
     {
       "version": "v0.17.10",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.10",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.10/CompilationMaker-v0.17.10.apk",
-      "notes": "Test build: manually triggered hosted QA now verifies the newest published release instead of an obsolete fallback APK. Installations signed by the old certificate must uninstall and reinstall before installing this release."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.9...v0.17.10"
     },
     {
       "version": "v0.17.9",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.9",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.9/CompilationMaker-v0.17.9.apk",
-      "notes": "Test build: hosted emulator QA now enables KVM and reliably stages Video A before verifying picker-to-Worker handoff. Installations signed by the old certificate must uninstall and reinstall before installing this release."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.8...v0.17.9"
     },
     {
       "version": "v0.17.8",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.8",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.8/CompilationMaker-v0.17.8.apk",
-      "notes": "Test build: deterministic picker QA now stages Video A through MediaStore and verifies WorkManager starts with its real URI. Installations signed by the old certificate must uninstall and reinstall before installing this release."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.7...v0.17.8"
     },
     {
       "version": "v0.17.7",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.7",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.7/CompilationMaker-v0.17.7.apk",
-      "notes": "Test build: fixes the Ubuntu release-QA runner so its release-signed picker test can execute. Installations signed by the old certificate must uninstall and reinstall before installing this release."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.6...v0.17.7"
     },
     {
       "version": "v0.17.6",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.6",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.6/CompilationMaker-v0.17.6.apk",
-      "notes": "Test build: deterministic Android picker QA, secret-based rotated signing, and Ubuntu emulator release verification. Installations signed by the old certificate must uninstall and reinstall before installing this release."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.5...v0.17.6"
     },
     {
       "version": "v0.17.5",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.5",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.5/CompilationMaker-v0.17.5.apk",
-      "notes": "Hardened bundled ML Kit OCR confirmation with explicit Task success/failure/cancellation callbacks, preflight readiness, one controlled timeout retry, candidate-local OCR failure handling, baseline-safe transition detection, and direct sparse checkpoint sampling."
+      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.4...v0.17.5"
     },
     {
       "version": "v0.17.4",
@@ -119,72 +125,6 @@
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.2",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.2/CompilationMaker-v0.16.2.apk",
       "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.16.1...v0.16.2"
-    },
-    {
-      "version": "v0.16.1",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.16.1",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.16.1/CompilationMaker-v0.16.1.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.15.1...v0.16.1"
-    },
-    {
-      "version": "v0.15.1",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.15.1",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.15.1/CompilationMaker-v0.15.1.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.15.0...v0.15.1"
-    },
-    {
-      "version": "v0.15.0",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.15.0",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.15.0/CompilationMaker-v0.15.0.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.6...v0.15.0"
-    },
-    {
-      "version": "v0.14.6",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.6",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.6/CompilationMaker-v0.14.6.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.5...v0.14.6"
-    },
-    {
-      "version": "v0.14.5",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.5",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.5/CompilationMaker-v0.14.5.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.4...v0.14.5"
-    },
-    {
-      "version": "v0.14.4",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.4",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.4/CompilationMaker-v0.14.4.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.3...v0.14.4"
-    },
-    {
-      "version": "v0.14.3",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.3",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.3/CompilationMaker-v0.14.3.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.2...v0.14.3"
-    },
-    {
-      "version": "v0.14.2",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.2",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.2/CompilationMaker-v0.14.2.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.1...v0.14.2"
-    },
-    {
-      "version": "v0.14.1",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.1",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.1/CompilationMaker-v0.14.1.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.14.0...v0.14.1"
-    },
-    {
-      "version": "v0.14.0",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.14.0",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.14.0/CompilationMaker-v0.14.0.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.13.3...v0.14.0"
-    },
-    {
-      "version": "v0.13.3",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.13.3",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.13.3/CompilationMaker-v0.13.3.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.13.2...v0.13.3"
     }
   ]
 }
