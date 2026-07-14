@@ -1,0 +1,24 @@
+{
+  "fixtureId": "video-a-real-01",
+  "source": "compilation_test_video_A.mp4",
+  "roi": {
+    "xPercent": 0.0,
+    "yPercent": 0.8,
+    "widthPercent": 0.1,
+    "heightPercent": 0.2
+  },
+  "expectedNoResults": false,
+  "expectedResetPolicy": null,
+  "transitions": [
+    { "from": null, "to": 1, "eventBoundaryMs": 30000, "toleranceMs": 1000 },
+    { "from": 1, "to": 2, "eventBoundaryMs": 75000, "toleranceMs": 1000 },
+    { "from": 2, "to": 3, "eventBoundaryMs": 255000, "toleranceMs": 1000 },
+    { "from": 3, "to": 4, "eventBoundaryMs": 855000, "toleranceMs": 1000 },
+    { "from": 4, "to": 5, "eventBoundaryMs": 975000, "toleranceMs": 1000 },
+    { "from": 5, "to": 6, "eventBoundaryMs": 1275000, "toleranceMs": 1000 },
+    { "from": 6, "to": 7, "eventBoundaryMs": 1395000, "toleranceMs": 1000 },
+    { "from": 7, "to": 8, "eventBoundaryMs": 1995000, "toleranceMs": 1000 },
+    { "from": 8, "to": 9, "eventBoundaryMs": 2415000, "toleranceMs": 1000 },
+    { "from": 9, "to": 10, "eventBoundaryMs": 3560000, "toleranceMs": 1000 }
+  ]
+}

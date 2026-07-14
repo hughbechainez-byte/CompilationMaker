@@ -37,6 +37,48 @@ data class StateIntervalInvestigation(
     val probes: Int
 )
 
+data class PersistentBoundaryResult(
+    val timeMs: Long?,
+    val samples: Int
+)
+
+/** Finds the earliest persistent target state inside an already classified complete interval. */
+suspend fun refinePersistentStateBoundary(
+    startMs: Long,
+    endMs: Long,
+    targetNumber: Int,
+    durationMs: Long,
+    minSpanMs: Long = 250L,
+    maxBinarySamples: Int = 8,
+    confirmationStepMs: Long = 250L,
+    sample: suspend (Long) -> Int?
+): PersistentBoundaryResult {
+    var lowMs = startMs.coerceIn(0L, durationMs)
+    var highMs = endMs.coerceIn(lowMs, durationMs)
+    var samples = 0
+    repeat(maxBinarySamples.coerceAtLeast(0)) {
+        if (highMs - lowMs <= minSpanMs.coerceAtLeast(1L)) return@repeat
+        val midpointMs = lowMs + (highMs - lowMs) / 2L
+        val value = sample(midpointMs)
+        samples++
+        if (value == targetNumber) highMs = midpointMs else lowMs = midpointMs
+    }
+    val confirmationTimes = listOf(
+        highMs,
+        highMs + confirmationStepMs,
+        highMs + confirmationStepMs * 2L
+    ).map { it.coerceIn(0L, durationMs) }.distinct()
+    val confirmations = confirmationTimes.map { timeMs ->
+        samples++
+        sample(timeMs)
+    }
+    val firstPersistent = confirmations.indices.firstOrNull { index ->
+        confirmations[index] == targetNumber &&
+            confirmations.drop(index + 1).any { it == targetNumber }
+    }
+    return PersistentBoundaryResult(firstPersistent?.let(confirmationTimes::get), samples)
+}
+
 /**
  * Recursively investigates a complete coarse interval.  Unstable samples remain local evidence;
  * they do not cancel sibling branches or manufacture transitions.

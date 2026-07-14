@@ -175,4 +175,18 @@ class OcrConfirmationPolicyTest {
         assertTrue(result.probes > 1)
         assertTrue(result.intervals.any { it.fromNumber == null && it.toNumber == 1 })
     }
+
+    @Test
+    fun firstStableNumberUsesBoundedPersistentBoundaryRefinement() = runBlocking {
+        val result = refinePersistentStateBoundary(
+            startMs = 0L,
+            endMs = 60_000L,
+            targetNumber = 1,
+            durationMs = 60_000L,
+            sample = { timeMs -> if (timeMs >= 30_000L) 1 else null }
+        )
+
+        assertTrue(result.samples <= 11)
+        assertTrue(result.timeMs in 30_000L..30_250L)
+    }
 }

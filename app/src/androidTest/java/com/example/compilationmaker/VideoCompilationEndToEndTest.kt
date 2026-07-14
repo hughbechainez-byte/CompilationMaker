@@ -71,11 +71,30 @@ class VideoCompilationEndToEndTest {
             val output = File(finished.outputPath)
             assertTrue("Expected verified output file", output.isFile)
             assertTrue("Expected non-empty output", output.length() > 0L)
+            copyLatestScanReport(context)
             output.copyTo(
                 File("/sdcard/Download/compilation_output_A_${System.currentTimeMillis()}.mp4")
             )
             assertEquals("Video A must produce ten clips", 10, finished.clipCount)
         }
+    }
+
+    @Test
+    fun exportLatestScanReportForDiagnostics() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val copied = copyLatestScanReport(context)
+        assertTrue("Expected copied scan report", copied.isFile && copied.length() > 0L)
+    }
+
+    private fun copyLatestScanReport(context: android.content.Context): File {
+        val report = File(context.filesDir, "scan_reports")
+            .listFiles { file -> file.isFile && file.extension == "json" }
+            ?.maxByOrNull { it.lastModified() }
+            ?: error("No scan report is available")
+        return report.copyTo(
+            File("/sdcard/Download/scan_report_A_latest.json"),
+            overwrite = true
+        )
     }
 
     private fun findVideoA(): Uri? {

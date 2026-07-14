@@ -3132,17 +3132,25 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 transitionEvidence.add("Visual pass reason=${candidate.reason}")
 
                 if (!hasCapturedFirstOne && afterNumber.value == 1 && beforeNumber.value != 1) {
-                    val firstOneMs = locateFirstNumberAppearance(
-                        frameProvider = frameProvider,
-                        startMs = sampleStart,
-                        hitMs = sampleEnd,
-                        scanWindow = scanWindow,
-                        sourceRotationDegrees = sourceRotationDegrees,
-                        targetNumber = 1,
-                        stepMs = min(1_000L, scanConfig.sampleStepMs),
-                        ocrFrameWidthPx = scanConfig.ocrFrameWidthPx,
-                        timing = timing
-                    )
+                    val firstOneMs = if (isCheckpointInterval) {
+                        refineCheckpointTransitionBoundary(
+                            frameProvider, candidateStart, candidateEnd, 1,
+                            scanWindow, sourceRotationDegrees, durationMs,
+                            scanConfig.ocrFrameWidthPx, timing
+                        )
+                    } else {
+                        locateFirstNumberAppearance(
+                            frameProvider = frameProvider,
+                            startMs = sampleStart,
+                            hitMs = sampleEnd,
+                            scanWindow = scanWindow,
+                            sourceRotationDegrees = sourceRotationDegrees,
+                            targetNumber = 1,
+                            stepMs = min(1_000L, scanConfig.sampleStepMs),
+                            ocrFrameWidthPx = scanConfig.ocrFrameWidthPx,
+                            timing = timing
+                        )
+                    }
                     ocrCalls += firstOneMs.calls
                     if (firstOneMs.timeMs != null) {
                         transitionMs = firstOneMs.timeMs
@@ -3596,35 +3604,20 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         ocrFrameWidthPx: Int,
         timing: ScanTimingSummary
     ): TimedDetection {
-        var lowMs = startMs.coerceIn(0L, durationMs)
-        var highMs = endMs.coerceIn(lowMs, durationMs)
-        var calls = 0
-        repeat(8) {
-            if (highMs - lowMs <= 250L) return@repeat
-            val midpointMs = lowMs + (highMs - lowMs) / 2L
-            val value = detectNumberAt(
-                frameProvider, midpointMs, scanWindow, sourceRotationDegrees, ocrFrameWidthPx, timing
-            )
-            calls++
-            if (value == afterNumber) highMs = midpointMs else lowMs = midpointMs
-        }
-        val confirmationTimes = listOf(highMs, highMs + 250L, highMs + 500L)
-            .map { it.coerceIn(0L, durationMs) }
-            .distinct()
-        val confirmations = confirmationTimes.map { sampleMs ->
-            calls++
-            detectNumberAt(
+        val boundary = refinePersistentStateBoundary(
+            startMs = startMs,
+            endMs = endMs,
+            targetNumber = afterNumber,
+            durationMs = durationMs,
+            sample = { sampleMs -> detectNumberAt(
                 frameProvider, sampleMs, scanWindow, sourceRotationDegrees, ocrFrameWidthPx, timing
-            )
-        }
-        val accepted = confirmations.indexOfFirst { it == afterNumber }.takeIf { first ->
-            first >= 0 && confirmations.drop(first + 1).any { it == afterNumber }
-        }
-        return if (accepted != null) {
-            TimedDetection(afterNumber, calls, confirmationTimes[accepted])
-        } else {
-            TimedDetection(null, calls, null)
-        }
+            ) }
+        )
+        return TimedDetection(
+            value = afterNumber.takeIf { boundary.timeMs != null },
+            calls = boundary.samples,
+            timeMs = boundary.timeMs
+        )
     }
 
     private suspend fun refineTransitionBoundary(
