@@ -1,16 +1,22 @@
 {
-  "version": "v0.17.19",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.19",
+  "version": "v0.17.20",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.20",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.19/CompilationMaker-v0.17.19.apk"
+    "url": ""
   },
-  "notes": "Test build: recursively investigates complete checkpoint intervals, preserves local OCR failures, and refines only sequential semantic state changes. Phase 1 fixture validation remains in progress.",
+  "notes": "Test build: uses exactly 61 Video A checkpoints, reuses coarse endpoint states, and bounds visual-only recursive OCR while preserving deeper semantic bisection. Phase 1 fixture validation remains in progress.",
   "updates": [
+    {
+      "version": "v0.17.20",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.20",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.20/app-release.apk",
+      "notes": "Test build: uses exactly 61 Video A checkpoints, reuses coarse endpoint states, and bounds visual-only recursive OCR while preserving deeper semantic bisection. Phase 1 fixture validation remains in progress."
+    },
     {
       "version": "v0.17.19",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.19",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.19/CompilationMaker-v0.17.19.apk",
-      "notes": "Test build: recursively investigates complete checkpoint intervals, preserves local OCR failures, and refines only sequential semantic state changes. Phase 1 fixture validation remains in progress."
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.19/app-release.apk",
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.18...v0.17.19"
     },
     {
       "version": "v0.17.18",
@@ -119,12 +125,6 @@
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.1",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.1/CompilationMaker-v0.17.1.apk",
       "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.0...v0.17.1"
-    },
-    {
-      "version": "v0.17.0",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.0",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.0/CompilationMaker-v0.17.0.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.16.4...v0.17.0"
     }
   ]
 }
