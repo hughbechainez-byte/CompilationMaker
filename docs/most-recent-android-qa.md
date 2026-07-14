@@ -1,46 +1,9 @@
 # Most Recent Android QA Note
 
-## Current test
-
-- Status: FAIL — the exact released APK continues in background but still does not produce the required Video A compilation.
-- App/version: 0.17.14 (versionCode 46), release tag `v0.17.14`, scanner/background commit `34eb66d`.
-- Emulator: `CompilationMaker_API35`, API 35, `emulator-5554`.
-- Published release APK SHA-256: `EF28FB1DD9515BFCEC09775F53408D8E2ED842E1C77831584F2E49E2607F6CE5`
-- Video A SHA-256: `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`
-- Video B SHA-256: `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`
-
-## Results
-
-- `./gradlew clean assembleDebug assembleRelease test` passed with AGP 8.13.2 and Gradle 8.13.
-- The release APK and matching release-signed instrumentation APK installed on the API 35 emulator.
-- `VideoPickerHandoffTest` passed: the `ACTION_OPEN_DOCUMENT` result was stubbed, returned to the app, and persisted the selected URI in the durable draft state.
-- The picker no longer routes to a hard-coded DocumentsUI package. This fixes the prior return-path failure and makes Espresso-Intents interception reliable.
-- The local QA runner now waits for a booted AVD, rechecks readiness before each run, and launches with the SwiftShader renderer and a 2 GB guest-memory target.
-- No physical device was connected.
-- The hosted Ubuntu QA workflow initially failed before tests because `gradlew` lacked execute permission; this patch adds the required `chmod +x` step.
-- The deterministic picker test now resolves staged Video A from MediaStore, returns that URI through the picker contract, and verifies the Worker enters an active state before cancellation.
-- Hosted QA was blocked by disabled KVM and a shared-storage fixture push failure; the workflow now enables `/dev/kvm` access and the runner creates/retries the Downloads staging path.
-- The signed `CompilationMaker-v0.17.9.apk` release asset was published and verified reachable before this update feed was promoted.
-- Manual hosted-QA dispatch now resolves the latest published release rather than an obsolete hard-coded tag.
-- The signed `CompilationMaker-v0.17.10.apk` release asset was published and verified reachable before this update feed was promoted.
-- Hosted QA run `29236205919` exposed a false pass: the test could not find Video A in MediaStore, but the runner continued after the instrumentation failure. The runner now fails for missing MediaStore visibility and preserves the instrumentation exit status.
-- OCR confirmation now uses per-frame, per-attempt, per-candidate, and candidate-scaled overall deadlines; confirmed transitions are stored incrementally.
-- OCR crops are padded and aspect-preservingly scaled to at least 128 px, variants are prepared lazily, ML Kit empty/error results stay candidate-local, and strong visual candidates provide a labeled fallback clip plan.
-- Scan progress maps to the first 43% of total-job progress and Worker progress is monotonic across phase changes.
-- Release-signed API 35 `VideoPickerHandoffTest` passed with the real staged Video A MediaStore URI.
-- Release-signed three-minute checkpoint Video A test completed in visual-fallback mode: 2 inferred transitions, 2 clips, verified 94,013 ms output, 902,471 bytes, and Worker `SUCCESS`.
-- OCR used 128x144 prepared raw inputs; observed attempts completed in approximately 140-170 ms and stopped after a valid parsed digit.
-- The legacy UI runner's Downloads-provider URI failed source setup on this emulator; the deterministic end-to-end instrumentation uses the readable MediaStore URI and now covers scan through verified export.
-- Hosted run `29240352815` proved `adb` can exit 0 while instrumentation reports `INSTRUMENTATION_CODE: -1`; the runner now parses failure markers, and the test imports the staged fixture into MediaStore under test-only all-files access when scanning is unavailable.
-- Hosted run `29241217097` passed the actual test (`OK (1 test)`, 0 failed) and proved final instrumentation code `-1` is Android's success result; the runner now requires `OK` plus status 0 and rejects only real failure markers/status -2.
-- Hosted run `29241640483` passed end-to-end as an authoritative workflow against the published v0.17.13 APK and staged Video A hash.
-- Host comparison pulled the generated output without placing Video B on-device. Output was 94.013333 seconds, 902,471 bytes, H.264/AAC 1280x720 at 2 fps; Video B is 400.000000 seconds, 4,495,038 bytes with the same stream shape.
-- The run found only candidates at 180 and 900 seconds, exported 2 visually inferred clips, and therefore failed the required ten-clip/400-second gate before SSIM or audio-correlation scoring.
-- The release instrumentation now requires exactly ten Video A clips so this incomplete result cannot be reported as an end-to-end pass again.
-- A follow-up 60-second checkpoint experiment made all 61 required coarse retrievals and found 14 candidate intervals, but OCR accepted only two incorrect `9 -> 6` transitions. This confirms candidate coverage and stable-state/OCR classification are separate blockers.
-- Exact published `v0.17.14` passed `BackgroundCompilationContinuationTest`: after leaving the app, its foreground WorkManager task remained active with persisted progress. The activity enters picture-in-picture with a live progress banner while work is active.
-- Exact published `v0.17.14` retained full checkpoint intervals and produced 14 visual candidates, but the 1,280px OCR/five-sample confirmation path timed out candidate-local calls and confirmed zero states. It exported a non-passing visual fallback: 14 clips, 655.000 seconds, 6,443,583 bytes.
-
-## First unresolved causal failure
-
-Build the persistent stable number-state timeline at 60-second checkpoints using bounded five-sample OCR evidence, then derive only semantic `null -> 1` / `N -> N+1` transitions. Visual fallback must not yield a primary-fixture success.
+- Status: FAIL — exact published APK did not finish the Video A gate within a viable scan duration.
+- App/version: 0.17.15 (versionCode 47), scanner commit `7defc78`, release tag `v0.17.15`.
+- Published APK: `CompilationMaker-v0.17.15.apk`, SHA-256 `B7CCDD276707CD7246B9490529FD41AB2860DADB2527DCA39CA056B4287B6C50`.
+- Fixtures: Video A SHA-256 `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`; Video B SHA-256 `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`.
+- Emulator evidence: API 35 `emulator-5554`; 9/62 checkpoints reached 540s at 14%, with each checkpoint callback taking roughly 5–9 seconds; test was force-stopped before output.
+- Result: no APK/runtime crash and no visual-fallback success, but no 10-clip/400-second comparison was possible.
+- First unresolved causal failure: five checkpoint OCR samples each create a MediaCodec decoder. Use the existing retriever for structured five-sample checkpoint evidence; use MediaCodec only to investigate retained candidate intervals.
