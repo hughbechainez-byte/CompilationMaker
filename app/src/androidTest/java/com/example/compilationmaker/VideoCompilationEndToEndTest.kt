@@ -39,7 +39,7 @@ class VideoCompilationEndToEndTest {
     @get:Rule val intentsRule = IntentsRule()
 
     @Test
-    fun threeMinuteCheckpointFlowExportsVideoA() {
+    fun oneMinuteCheckpointFlowExportsVideoA() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val source = requireNotNull(findVideoA()) { "Video A is not available in MediaStore" }
         Intents.intending(hasAction(Intent.ACTION_OPEN_DOCUMENT)).respondWith(
@@ -56,7 +56,7 @@ class VideoCompilationEndToEndTest {
         ActivityScenario.launch(MainActivity::class.java).use {
             onView(withId(R.id.selectButton)).perform(click())
             onView(withId(R.id.scanSpeedPicker)).perform(scrollTo(), click())
-            onData(allOf(instanceOf(String::class.java), `is`("3-minute checkpoints"))).perform(click())
+            onData(allOf(instanceOf(String::class.java), `is`("1-minute checkpoints"))).perform(click())
             onView(withId(R.id.processButton)).perform(scrollTo(), click())
 
             val deadline = SystemClock.elapsedRealtime() + 10 * 60_000L
@@ -71,7 +71,9 @@ class VideoCompilationEndToEndTest {
             val output = File(finished.outputPath)
             assertTrue("Expected verified output file", output.isFile)
             assertTrue("Expected non-empty output", output.length() > 0L)
-            output.copyTo(File("/sdcard/Download/compilation_output_A.mp4"), overwrite = true)
+            output.copyTo(
+                File("/sdcard/Download/compilation_output_A_${System.currentTimeMillis()}.mp4")
+            )
             assertEquals("Video A must produce ten clips", 10, finished.clipCount)
         }
     }

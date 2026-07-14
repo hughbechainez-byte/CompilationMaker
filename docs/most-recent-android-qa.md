@@ -37,7 +37,8 @@
 - Host comparison pulled the generated output without placing Video B on-device. Output was 94.013333 seconds, 902,471 bytes, H.264/AAC 1280x720 at 2 fps; Video B is 400.000000 seconds, 4,495,038 bytes with the same stream shape.
 - The run found only candidates at 180 and 900 seconds, exported 2 visually inferred clips, and therefore failed the required ten-clip/400-second gate before SSIM or audio-correlation scoring.
 - The release instrumentation now requires exactly ten Video A clips so this incomplete result cannot be reported as an end-to-end pass again.
+- A follow-up 60-second checkpoint experiment made all 61 required coarse retrievals and found 14 candidate intervals, but OCR accepted only two incorrect `9 -> 6` transitions. This confirms candidate coverage and stable-state/OCR classification are separate blockers.
 
 ## First unresolved causal failure
 
-The 180-second coarse checkpoint scan found only 2 of the required 10 transitions. The scanner must independently recover all ten transitions before exact export and A/B scoring can pass.
+The 60-second coarse pass yields 14 candidates, but the current narrow-window confirmation accepts only two incorrect `9 -> 6` states instead of ten sequential transitions. Implement the plan's full-interval investigation and five-sample stable-state classifier before exact export and A/B scoring.
