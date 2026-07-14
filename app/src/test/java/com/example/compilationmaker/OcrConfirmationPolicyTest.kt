@@ -122,4 +122,12 @@ class OcrConfirmationPolicyTest {
         )
         assertFalse(unstable.stable)
     }
+
+    @Test
+    fun semanticPolicyRejectsUnknownOrBackwardsTransitions() {
+        assertFalse(classifyTransition(null, 6).sequential)
+        assertFalse(classifyTransition(9, 6).sequential)
+        assertTrue(classifyTransition(null, 1).sequential)
+        assertTrue(classifyTransition(6, 7).sequential)
+    }
 }

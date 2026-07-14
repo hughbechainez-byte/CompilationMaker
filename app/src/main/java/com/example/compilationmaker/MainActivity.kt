@@ -3052,18 +3052,13 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             var hasCapturedFirstOne = false
             val confirmedLedger = IncrementalTransitionLedger(scanConfig.dedupeMs)
             val ocrPassStart = SystemClock.elapsedRealtime()
-            val overallConfirmationBudgetMs = ConfirmationTimeoutPolicy.overallMs(candidateWindowsForRefine.size)
-            val confirmationDeadlineMs = ocrPassStart + overallConfirmationBudgetMs
             AppLog.i(context, tag, "[finalize] beginning number confirmation thread=${Thread.currentThread().name}")
             for ((index, candidate) in candidateWindowsForRefine.withIndex()) {
                 currentCoroutineContext().ensureActive()
-                val remainingOverallMs = confirmationDeadlineMs - SystemClock.elapsedRealtime()
-                if (remainingOverallMs <= 0L) {
-                    AppLog.w(context, tag, "[finalize] overall confirmation deadline reached after $index/${candidateWindowsForRefine.size}; preserving ${confirmedLedger.size} confirmed transitions")
-                    break
-                }
                 try {
-                    withTimeout(min(ConfirmationTimeoutPolicy.CANDIDATE_MS, remainingOverallMs)) {
+                    // A timeout is evidence about this interval only.  Never let it discard later
+                    // semantic intervals that have already been retained by the checkpoint timeline.
+                    withTimeout(ConfirmationTimeoutPolicy.CANDIDATE_MS) {
                 val confirmationPercent = 46 + ((index + 1) * 7 / candidateWindowsForRefine.size.coerceAtLeast(1))
                 progress(CompilationPipelineState.REFINING, "Confirming transition ${index + 1} of ${candidateWindowsForRefine.size}", confirmationPercent)
                 val candidateStart = max(0L, candidate.startMs)
@@ -3196,17 +3191,19 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     return@withTimeout
                 }
                 val transitionAtMs = transitionMs
+                val fromNumber = beforeNumber.value
+                val semantic = classifyTransition(fromNumber, toNumber)
+                if (!semantic.sequential) {
+                    rejectedCandidates++
+                    transitionEvidence.add("Rejected non-sequential transition ${semantic.label}")
+                    AppLog.i(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=rejected-non-sequential state=${semantic.label}")
+                    return@withTimeout
+                }
                 confirmedLedger.confirm(transitionAtMs)
 
                 val cutStartMs = max(0L, transitionAtMs - 10_000L)
                 val cutEndMs = min(durationMs, transitionAtMs + 30_000L)
-                val fromNumber = beforeNumber.value
-                if (fromNumber != null && toNumber != fromNumber + 1) {
-                    transitionEvidence.add("Non-sequential transition ${fromNumber} -> ${toNumber}")
-                }
-                if (fromNumber == null) {
-                    transitionEvidence.add("Initial transition from no-number state")
-                }
+                transitionEvidence.add("Semantic transition ${semantic.label}")
                 acceptedTransitions++
                 transitionMarks.add(
                     TransitionMark(
@@ -3235,7 +3232,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     }
                 } catch (timeout: TimeoutCancellationException) {
                     rejectedCandidates++
-                    AppLog.w(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=unconfirmed-timeout scope=candidate limitMs=${min(ConfirmationTimeoutPolicy.CANDIDATE_MS, remainingOverallMs)}; preserving ${confirmedLedger.size} confirmations")
+                    AppLog.w(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=unconfirmed-timeout scope=candidate limitMs=${ConfirmationTimeoutPolicy.CANDIDATE_MS}; continuing with later intervals and preserving ${confirmedLedger.size} confirmations")
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (failure: Exception) {
