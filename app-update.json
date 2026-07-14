@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.13",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.13",
+  "version": "v0.17.14",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.14",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.13/CompilationMaker-v0.17.13.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.14/CompilationMaker-v0.17.14.apk"
   },
-  "notes": "OCR confirmation fix plus authoritative hosted QA: layered timeouts, padded 128px inputs, incremental results, labeled visual fallback clips, monotonic progress, and reliable staged-fixture MediaStore import.",
+  "notes": "Checkpoint intervals now retain their full evidence range, use five-sample stable-state voting and bounded boundary refinement. Processing continues in the background with a live picture-in-picture status view.",
   "updates": [
+    {
+      "version": "v0.17.14",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.14",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.14/CompilationMaker-v0.17.14.apk",
+      "notes": "Full checkpoint evidence, five-sample stable-state voting, bounded boundary refinement, and background picture-in-picture progress."
+    },
     {
       "version": "v0.17.13",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.13",
