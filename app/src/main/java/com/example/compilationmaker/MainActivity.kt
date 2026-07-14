@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.PictureInPictureParams
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentResolver
@@ -38,6 +39,7 @@ import android.text.format.DateFormat
 import android.text.Editable
 import android.text.TextWatcher
 import android.util.Base64
+import android.util.Rational
 import android.view.Surface
 import android.view.View
 import android.view.MotionEvent
@@ -214,6 +216,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var scanAreaWidth: EditText
     private lateinit var scanAreaHeight: EditText
     private lateinit var progressPercentText: TextView
+    private lateinit var backgroundStatusBanner: TextView
     private lateinit var statusFeedText: TextView
     private lateinit var statusFeedScroll: ScrollView
     private lateinit var checkUpdatesButton: Button
@@ -273,6 +276,17 @@ class MainActivity : AppCompatActivity() {
         videoPreview.stopPlayback()
     }
 
+    override fun onUserLeaveHint() {
+        if (hasActiveCompilation() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !isInPictureInPictureMode) {
+            val params = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(16, 9))
+                .build()
+            runCatching { enterPictureInPictureMode(params) }
+                .onFailure { AppLog.w(this, logTag, "Could not enter background status picture-in-picture", it) }
+        }
+        super.onUserLeaveHint()
+    }
+
     override fun onResume() {
         super.onResume()
         restoreActiveCompilationWork()
@@ -313,6 +327,7 @@ class MainActivity : AppCompatActivity() {
         scanAreaWidth = binding.scanAreaWidth
         scanAreaHeight = binding.scanAreaHeight
         progressPercentText = binding.progressPercentText
+        backgroundStatusBanner = binding.backgroundStatusBanner
         statusFeedText = binding.statusFeedText
         statusFeedScroll = binding.statusFeedScroll
         checkUpdatesButton = binding.checkUpdatesButton
@@ -1760,6 +1775,7 @@ class MainActivity : AppCompatActivity() {
             binding.progressBar.visibility = if (busy) ProgressBar.VISIBLE else ProgressBar.INVISIBLE
             progressPercentText.visibility = View.VISIBLE
             statusFeedScroll.visibility = View.VISIBLE
+            backgroundStatusBanner.visibility = if (busy) View.VISIBLE else View.GONE
         }
     }
 
@@ -1775,6 +1791,8 @@ class MainActivity : AppCompatActivity() {
             binding.statusText.text = message
             progressPercentText.text = "$percentValue%"
             binding.progressBar.progress = percentValue
+            backgroundStatusBanner.text = "Background processing: $percentValue% • $message"
+            backgroundStatusBanner.visibility = View.VISIBLE
             addStatusLine(message)
         }
         updateProgressNotification(message, percentValue, percentValue < 100)
@@ -2580,7 +2598,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 maxVisualSamples = 4_200,
                 totalScanBudgetMs = 110_000L,
                 maxCandidateWindows = 64,
-                ocrFrameWidthPx = 640,
+                // A 10%-wide lower-corner ROI needs enough source pixels for the outlined digit.
+                ocrFrameWidthPx = 1_280,
                 stableMaxStepMs = 2_500L,
                 stableRampSamples = 4,
                 denseRefineStepMs = 250L,
@@ -2660,6 +2679,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             var scanBudgetReached = false
             val coarseDecodeStart = SystemClock.elapsedRealtime()
             var previousSignature: RoiSignature? = null
+            var previousCheckpointMs: Long? = null
             var msSinceLastCandidate = Long.MAX_VALUE
             var consecutiveChangedSamples = 0
             var pendingChangeStartMs: Long? = null
@@ -2717,23 +2737,35 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                             pendingPeakScore = 0f
                         }
 
-                        val visualChangeDetected = rawVisualChange && consecutiveChangedSamples >= 2
+                        val isDirectCheckpointScan = frameStepMs >= 60_000L
+                        val visualChangeDetected = rawVisualChange &&
+                            (isDirectCheckpointScan || consecutiveChangedSamples >= 2)
                         val shouldProbe = visualChangeDetected
-                        val probeSeedMs = if (visualChangeDetected) pendingChangeStartMs ?: cursorMs else cursorMs
+                        val probeSeedMs = if (isDirectCheckpointScan) {
+                            ((previousCheckpointMs ?: cursorMs) + cursorMs) / 2L
+                        } else if (visualChangeDetected) {
+                            pendingChangeStartMs ?: cursorMs
+                        } else {
+                            cursorMs
+                        }
                         val probePeakScore = if (visualChangeDetected && pendingPeakScore > 0f) {
                             pendingPeakScore
                         } else {
                             signatureDelta
                         }
                         if (shouldProbe) {
-                            val padStart = max(0L, probeSeedMs - scanConfig.candidatePadMs)
-                            val padEnd = min(durationMs, probeSeedMs + scanConfig.candidatePadMs)
+                            val padStart = if (isDirectCheckpointScan) {
+                                previousCheckpointMs ?: cursorMs
+                            } else {
+                                max(0L, probeSeedMs - scanConfig.candidatePadMs)
+                            }
+                            val padEnd = if (isDirectCheckpointScan) cursorMs else min(durationMs, probeSeedMs + scanConfig.candidatePadMs)
                             val seedMs = probeSeedMs
                             val reason = when {
                                 visualChangeDetected -> CandidateReason.VisualChange
                                 else -> CandidateReason.VisualChange
                             }
-                            if (candidateWindows.isNotEmpty()) {
+                            if (!isDirectCheckpointScan && candidateWindows.isNotEmpty()) {
                                 val last = candidateWindows.last()
                                 if (padStart <= last.endMs + scanConfig.candidateMergeGapMs) {
                                     candidateWindows[candidateWindows.lastIndex] = last.copy(
@@ -2778,6 +2810,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                             stableSamples++
                         }
                         previousSignature = signature
+                        previousCheckpointMs = cursorMs
                     } finally {
                         frame.recycle()
                     }
@@ -2795,6 +2828,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     progress(CompilationPipelineState.COARSE_SCAN, "Frame provider fallback: $frameProviderFallbackReason", 10)
                     frameProvider = retrieverFrameProvider
                     coarseFramesSeen = 0
+                    previousSignature = null
+                    previousCheckpointMs = null
                     val retryDecodeStart = SystemClock.elapsedRealtime()
                     retrieverFrameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
                         if (SystemClock.elapsedRealtime() - scanStartRealtime >= scanConfig.totalScanBudgetMs) {
@@ -2837,19 +2872,31 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                                 pendingChangeStartMs = null
                                 pendingPeakScore = 0f
                             }
-                            val visualChangeDetected = rawVisualChange && consecutiveChangedSamples >= 2
+                            val isDirectCheckpointScan = frameStepMs >= 60_000L
+                            val visualChangeDetected = rawVisualChange &&
+                                (isDirectCheckpointScan || consecutiveChangedSamples >= 2)
                             val shouldProbe = visualChangeDetected
-                            val probeSeedMs = if (visualChangeDetected) pendingChangeStartMs ?: cursorMs else cursorMs
+                            val probeSeedMs = if (isDirectCheckpointScan) {
+                                ((previousCheckpointMs ?: cursorMs) + cursorMs) / 2L
+                            } else if (visualChangeDetected) {
+                                pendingChangeStartMs ?: cursorMs
+                            } else {
+                                cursorMs
+                            }
                             val probePeakScore = if (visualChangeDetected && pendingPeakScore > 0f) pendingPeakScore else signatureDelta
                             if (shouldProbe) {
-                                val padStart = max(0L, probeSeedMs - scanConfig.candidatePadMs)
-                                val padEnd = min(durationMs, probeSeedMs + scanConfig.candidatePadMs)
+                                val padStart = if (isDirectCheckpointScan) {
+                                    previousCheckpointMs ?: cursorMs
+                                } else {
+                                    max(0L, probeSeedMs - scanConfig.candidatePadMs)
+                                }
+                                val padEnd = if (isDirectCheckpointScan) cursorMs else min(durationMs, probeSeedMs + scanConfig.candidatePadMs)
                                 val seedMs = probeSeedMs
                                 val reason = when {
                                     visualChangeDetected -> CandidateReason.VisualChange
                                     else -> CandidateReason.VisualChange
                                 }
-                                if (candidateWindows.isNotEmpty()) {
+                                if (!isDirectCheckpointScan && candidateWindows.isNotEmpty()) {
                                     val last = candidateWindows.last()
                                     if (padStart <= last.endMs + scanConfig.candidateMergeGapMs) {
                                         candidateWindows[candidateWindows.lastIndex] = last.copy(
@@ -2876,6 +2923,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                                 stableSamples++
                             }
                             previousSignature = signature
+                            previousCheckpointMs = cursorMs
                         } finally {
                             frame.recycle()
                         }
@@ -2974,27 +3022,27 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 val sampleStart = max(0L, candidateStart - scanConfig.prefirstProbeMs)
                 val sampleEnd = min(durationMs, candidateEnd + scanConfig.prefirstProbeMs)
                 val centerMs = candidate.seedMs.coerceIn(sampleStart, sampleEnd)
+                val isCheckpointInterval = frameStepMs >= 60_000L &&
+                    candidateEnd - candidateStart >= frameStepMs * 9L / 10L
 
-                val beforeNumber = detectNumberInRange(
-                    frameProvider = frameProvider,
-                    startMs = sampleStart,
-                    endMs = centerMs,
-                    stepMs = scanConfig.neighborhoodStepMs,
-                    scanWindow = scanWindow,
-                    sourceRotationDegrees = sourceRotationDegrees,
-                    ocrFrameWidthPx = scanConfig.ocrFrameWidthPx,
-                    timing = timing
+                val beforeNumber = if (isCheckpointInterval) {
+                    detectStableNumberAt(
+                        frameProvider, candidateStart, scanWindow, sourceRotationDegrees,
+                        scanConfig.ocrFrameWidthPx, durationMs, timing
+                    )
+                } else detectNumberInRange(
+                    frameProvider, sampleStart, centerMs, scanConfig.neighborhoodStepMs,
+                    scanWindow, sourceRotationDegrees, scanConfig.ocrFrameWidthPx, timing
                 )
                 ocrCalls += beforeNumber.calls
-                val afterNumber = detectNumberInRange(
-                    frameProvider = frameProvider,
-                    startMs = centerMs,
-                    endMs = sampleEnd,
-                    stepMs = scanConfig.neighborhoodStepMs,
-                    scanWindow = scanWindow,
-                    sourceRotationDegrees = sourceRotationDegrees,
-                    ocrFrameWidthPx = scanConfig.ocrFrameWidthPx,
-                    timing = timing
+                val afterNumber = if (isCheckpointInterval) {
+                    detectStableNumberAt(
+                        frameProvider, candidateEnd, scanWindow, sourceRotationDegrees,
+                        scanConfig.ocrFrameWidthPx, durationMs, timing
+                    )
+                } else detectNumberInRange(
+                    frameProvider, centerMs, sampleEnd, scanConfig.neighborhoodStepMs,
+                    scanWindow, sourceRotationDegrees, scanConfig.ocrFrameWidthPx, timing
                 )
                 ocrCalls += afterNumber.calls
                 var transitionMs: Long? = null
@@ -3028,20 +3076,17 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 }
 
                 if (transitionMs == null && beforeNumber.value != null && afterNumber.value != null && beforeNumber.value != afterNumber.value) {
-                    val refined = refineTransitionBoundary(
-                        frameProvider = frameProvider,
-                        startMs = sampleStart,
-                        endMs = sampleEnd,
-                        beforeNumber = beforeNumber.value,
-                        afterNumber = afterNumber.value,
-                        scanWindow = scanWindow,
-                        sourceRotationDegrees = sourceRotationDegrees,
-                        timing = timing,
-                        sampleStepMs = scanConfig.denseRefineStepMs,
-                        iterations = scanConfig.refineIterations,
-                        windowMs = scanConfig.refineWindowMs,
-                        durationMs = durationMs,
-                        ocrFrameWidthPx = scanConfig.ocrFrameWidthPx
+                    val refined = if (isCheckpointInterval) {
+                        refineCheckpointTransitionBoundary(
+                            frameProvider, candidateStart, candidateEnd, afterNumber.value,
+                            scanWindow, sourceRotationDegrees, durationMs,
+                            scanConfig.ocrFrameWidthPx, timing
+                        )
+                    } else refineTransitionBoundary(
+                        frameProvider, sampleStart, sampleEnd, beforeNumber.value,
+                        afterNumber.value, scanWindow, sourceRotationDegrees, timing,
+                        scanConfig.denseRefineStepMs, scanConfig.refineIterations,
+                        scanConfig.refineWindowMs, durationMs, scanConfig.ocrFrameWidthPx
                     )
                     ocrCalls += refined.calls
                     if (refined.timeMs != null) {
@@ -3311,6 +3356,85 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             cursor += safeStepMs
         }
         return TimedDetection(singleHit, calls, singleHitMs)
+    }
+
+    /**
+     * A checkpoint endpoint is a state sample, not a miniature candidate window.  Require a
+     * majority across the endpoint and its immediate neighbours so a single OCR misread cannot
+     * manufacture a transition.
+     */
+    private suspend fun detectStableNumberAt(
+        frameProvider: FrameProvider,
+        centerMs: Long,
+        scanWindow: ScanWindow,
+        sourceRotationDegrees: Int,
+        ocrFrameWidthPx: Int,
+        durationMs: Long,
+        timing: ScanTimingSummary
+    ): TimedDetection {
+        val sampleTimes = listOf(-1_000L, -500L, 0L, 500L, 1_000L)
+            .map { (centerMs + it).coerceIn(0L, durationMs) }
+            .distinct()
+        val values = ArrayList<Int>(sampleTimes.size)
+        var calls = 0
+        for (sampleMs in sampleTimes) {
+            currentCoroutineContext().ensureActive()
+            detectNumberAt(
+                frameProvider, sampleMs, scanWindow, sourceRotationDegrees, ocrFrameWidthPx, timing
+            )?.let(values::add)
+            calls++
+        }
+        val grouped = values.groupingBy { it }.eachCount()
+        val winner = grouped.maxByOrNull { it.value }
+        val competitorVotes = grouped.filterKeys { it != winner?.key }.values.maxOrNull() ?: 0
+        return if (winner != null && winner.value >= 3 && competitorVotes < 2) {
+            TimedDetection(winner.key, calls, centerMs)
+        } else {
+            TimedDetection(null, calls, null)
+        }
+    }
+
+    /** Refines a confirmed direct-checkpoint interval without decoding every intervening frame. */
+    private suspend fun refineCheckpointTransitionBoundary(
+        frameProvider: FrameProvider,
+        startMs: Long,
+        endMs: Long,
+        afterNumber: Int,
+        scanWindow: ScanWindow,
+        sourceRotationDegrees: Int,
+        durationMs: Long,
+        ocrFrameWidthPx: Int,
+        timing: ScanTimingSummary
+    ): TimedDetection {
+        var lowMs = startMs.coerceIn(0L, durationMs)
+        var highMs = endMs.coerceIn(lowMs, durationMs)
+        var calls = 0
+        repeat(8) {
+            if (highMs - lowMs <= 250L) return@repeat
+            val midpointMs = lowMs + (highMs - lowMs) / 2L
+            val value = detectNumberAt(
+                frameProvider, midpointMs, scanWindow, sourceRotationDegrees, ocrFrameWidthPx, timing
+            )
+            calls++
+            if (value == afterNumber) highMs = midpointMs else lowMs = midpointMs
+        }
+        val confirmationTimes = listOf(highMs, highMs + 250L, highMs + 500L)
+            .map { it.coerceIn(0L, durationMs) }
+            .distinct()
+        val confirmations = confirmationTimes.map { sampleMs ->
+            calls++
+            detectNumberAt(
+                frameProvider, sampleMs, scanWindow, sourceRotationDegrees, ocrFrameWidthPx, timing
+            )
+        }
+        val accepted = confirmations.indexOfFirst { it == afterNumber }.takeIf { first ->
+            first >= 0 && confirmations.drop(first + 1).any { it == afterNumber }
+        }
+        return if (accepted != null) {
+            TimedDetection(afterNumber, calls, confirmationTimes[accepted])
+        } else {
+            TimedDetection(null, calls, null)
+        }
     }
 
     private suspend fun refineTransitionBoundary(

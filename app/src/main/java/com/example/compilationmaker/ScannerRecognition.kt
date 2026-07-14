@@ -121,13 +121,15 @@ class MlKitDigitRecognizer(context: Context) : DigitRecognizer {
         } catch (timeout: TimeoutCancellationException) {
             throw OcrRecognitionTimeoutException(branch, timeout)
         }
-        val text = result.text.replace("\n", " ").trim()
-        val match = Regex("[-+]?[0-9]+").find(text)
-        val value = match?.value?.toIntOrNull()
+        val text = result.text.trim()
+        // Confirmation accepts only one complete digit line; incidental overlay text must not
+        // be interpreted as a transition number.
+        val matchedLine = text.lineSequence().map(String::trim).firstOrNull { it.matches(Regex("^[0-9]{1,3}$")) }
+        val value = matchedLine?.toIntOrNull()
         val confidence = when {
             value == null -> 0f
-            match.value.length <= 2 && text.isNotBlank() -> 0.95f
-            match.value.length <= 3 -> 0.88f
+            matchedLine.length <= 2 && text.isNotBlank() -> 0.95f
+            matchedLine.length <= 3 -> 0.88f
             else -> 0.72f
         }
         val status = when {
