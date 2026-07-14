@@ -2,14 +2,14 @@
   "version": "v0.17.21",
   "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.21",
   "apk": {
-    "url": ""
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.21/CompilationMaker-v0.17.21.apk"
   },
   "notes": "Test build: caps production semantic interval recursion at three stable-state probes while retaining deep deterministic recursion coverage. Phase 1 fixture validation remains in progress.",
   "updates": [
     {
       "version": "v0.17.21",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.21",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.21/app-release.apk",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.21/CompilationMaker-v0.17.21.apk",
       "notes": "Test build: caps production semantic interval recursion at three stable-state probes while retaining deep deterministic recursion coverage. Phase 1 fixture validation remains in progress."
     },
     {
