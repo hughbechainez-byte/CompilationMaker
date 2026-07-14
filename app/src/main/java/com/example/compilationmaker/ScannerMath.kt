@@ -4,6 +4,41 @@ import kotlin.math.max
 
 data class VisualFallbackCandidate(val timestampMs: Long, val peakScore: Float, val visualChange: Boolean)
 
+data class StableStateVote(val timestampMs: Long, val value: Int?)
+
+data class StableNumberState(
+    val value: Int?,
+    val stable: Boolean,
+    val votes: List<StableStateVote>
+)
+
+/** Five-sample state voting used by the checkpoint timeline and deterministic tests. */
+fun classifyStableNumberState(votes: List<StableStateVote>): StableNumberState {
+    val numbers = votes.mapNotNull { it.value }
+    val grouped = numbers.groupingBy { it }.eachCount()
+    val winner = grouped.maxByOrNull { it.value }
+    val competingVotes = grouped.filterKeys { it != winner?.key }.values.maxOrNull() ?: 0
+    val stableNumber = winner?.takeIf { it.value >= 3 && competingVotes < 2 }?.key
+    val validNullVotes = votes.count { it.value == null }
+    val stableNull = stableNumber == null && validNullVotes >= 3 && grouped.values.none { it >= 2 }
+    return StableNumberState(
+        value = stableNumber,
+        stable = stableNumber != null || stableNull,
+        votes = votes
+    )
+}
+
+data class AdaptiveVisualThreshold(val median: Float, val mad: Float, val threshold: Float)
+
+fun adaptiveVisualThreshold(scores: List<Float>): AdaptiveVisualThreshold {
+    if (scores.isEmpty()) return AdaptiveVisualThreshold(0f, 0f, 8f)
+    val sorted = scores.sorted()
+    val median = sorted[sorted.size / 2]
+    val deviations = scores.map { kotlin.math.abs(it - median) }.sorted()
+    val mad = deviations[deviations.size / 2]
+    return AdaptiveVisualThreshold(median, mad, (median + 6f * mad).coerceIn(8f, 25f))
+}
+
 class IncrementalTransitionLedger(private val dedupeMs: Long) {
     private val confirmed = ArrayList<Long>()
     val size: Int get() = confirmed.size

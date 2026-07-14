@@ -82,4 +82,30 @@ class OcrConfirmationPolicyTest {
         assertEquals(100, monotonicProgressPercent(100, 44))
         assertEquals(55, monotonicProgressPercent(44, 55))
     }
+
+    @Test
+    fun fiveSampleTimelineRequiresMajorityWithoutTwoCompetingVotes() {
+        val stable = classifyStableNumberState(
+            listOf(
+                StableStateVote(0L, 4), StableStateVote(500L, 4), StableStateVote(1_000L, 4),
+                StableStateVote(1_500L, null), StableStateVote(2_000L, null)
+            )
+        )
+        val unstable = classifyStableNumberState(
+            listOf(
+                StableStateVote(0L, 4), StableStateVote(500L, 4), StableStateVote(1_000L, 4),
+                StableStateVote(1_500L, 9), StableStateVote(2_000L, 9)
+            )
+        )
+        assertTrue(stable.stable)
+        assertEquals(4, stable.value)
+        assertFalse(unstable.stable)
+    }
+
+    @Test
+    fun adaptiveVisualThresholdResistsIsolatedNoise() {
+        val threshold = adaptiveVisualThreshold(listOf(1f, 1.1f, 0.9f, 1f, 14f))
+        assertTrue(threshold.threshold >= 8f)
+        assertTrue(threshold.threshold < 14f)
+    }
 }

@@ -2598,8 +2598,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 maxVisualSamples = 4_200,
                 totalScanBudgetMs = 110_000L,
                 maxCandidateWindows = 64,
-                // A 10%-wide lower-corner ROI needs enough source pixels for the outlined digit.
-                ocrFrameWidthPx = 1_280,
+                ocrFrameWidthPx = 640,
                 stableMaxStepMs = 2_500L,
                 stableRampSamples = 4,
                 denseRefineStepMs = 250L,
@@ -2692,6 +2691,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             var acceptedTransitions = 0
             var rejectedCandidates = 0
             val transitionMarks = ArrayList<TransitionMark>()
+            val checkpointTimeline = ArrayList<CheckpointTimelineEntry>()
             try {
                 retrieverFrameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
                     if (stopCoarseScan) {
@@ -2723,6 +2723,15 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     try {
                         visualSamples++
                         val signature = computeRoiSignature(frame, scanWindow, sourceRotationDegrees)
+                        val isDirectCheckpointScan = frameStepMs >= 60_000L
+                        if (isDirectCheckpointScan) {
+                            val state = detectStableCheckpointState(
+                                frameProvider, cursorMs, scanWindow, sourceRotationDegrees,
+                                640, durationMs, timing
+                            )
+                            ocrCalls += state.calls
+                            checkpointTimeline += CheckpointTimelineEntry(cursorMs, signature, state.state)
+                        }
                         val signatureDelta = previousSignature?.let { roiDifference(it, signature) } ?: 0f
                         val rawVisualChange = signatureDelta >= scanConfig.changeThreshold
                         if (rawVisualChange) {
@@ -2737,7 +2746,6 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                             pendingPeakScore = 0f
                         }
 
-                        val isDirectCheckpointScan = frameStepMs >= 60_000L
                         val visualChangeDetected = rawVisualChange &&
                             (isDirectCheckpointScan || consecutiveChangedSamples >= 2)
                         val shouldProbe = visualChangeDetected
@@ -2753,7 +2761,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                         } else {
                             signatureDelta
                         }
-                        if (shouldProbe) {
+                        if (shouldProbe && !isDirectCheckpointScan) {
                             val padStart = if (isDirectCheckpointScan) {
                                 previousCheckpointMs ?: cursorMs
                             } else {
@@ -2830,6 +2838,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     coarseFramesSeen = 0
                     previousSignature = null
                     previousCheckpointMs = null
+                    checkpointTimeline.clear()
                     val retryDecodeStart = SystemClock.elapsedRealtime()
                     retrieverFrameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
                         if (SystemClock.elapsedRealtime() - scanStartRealtime >= scanConfig.totalScanBudgetMs) {
@@ -2859,6 +2868,15 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                         try {
                             visualSamples++
                             val signature = computeRoiSignature(frame, scanWindow, sourceRotationDegrees)
+                            val isDirectCheckpointScan = frameStepMs >= 60_000L
+                            if (isDirectCheckpointScan) {
+                                val state = detectStableCheckpointState(
+                                    frameProvider, cursorMs, scanWindow, sourceRotationDegrees,
+                                    640, durationMs, timing
+                                )
+                                ocrCalls += state.calls
+                                checkpointTimeline += CheckpointTimelineEntry(cursorMs, signature, state.state)
+                            }
                             val signatureDelta = previousSignature?.let { roiDifference(it, signature) } ?: 0f
                             val rawVisualChange = signatureDelta >= scanConfig.changeThreshold
                             if (rawVisualChange) {
@@ -2872,7 +2890,6 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                                 pendingChangeStartMs = null
                                 pendingPeakScore = 0f
                             }
-                            val isDirectCheckpointScan = frameStepMs >= 60_000L
                             val visualChangeDetected = rawVisualChange &&
                                 (isDirectCheckpointScan || consecutiveChangedSamples >= 2)
                             val shouldProbe = visualChangeDetected
@@ -2884,7 +2901,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                                 cursorMs
                             }
                             val probePeakScore = if (visualChangeDetected && pendingPeakScore > 0f) pendingPeakScore else signatureDelta
-                            if (shouldProbe) {
+                            if (shouldProbe && !isDirectCheckpointScan) {
                                 val padStart = if (isDirectCheckpointScan) {
                                     previousCheckpointMs ?: cursorMs
                                 } else {
@@ -2934,6 +2951,38 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 } else {
                     throw e
                 }
+            }
+
+            if (frameStepMs >= 60_000L && checkpointTimeline.size >= 2) {
+                candidateWindows.clear()
+                val adjacentScores = checkpointTimeline.zipWithNext { previous, current ->
+                    roiDifference(previous.signature, current.signature)
+                }
+                val threshold = adaptiveVisualThreshold(adjacentScores)
+                checkpointTimeline.zipWithNext().forEachIndexed { index, (previous, current) ->
+                    val visualScore = adjacentScores[index]
+                    val stateChanged = previous.state.stable && current.state.stable &&
+                        previous.state.value != current.state.value
+                    if (stateChanged || visualScore >= threshold.threshold) {
+                        candidateWindows += TransitionCandidateWindow(
+                            startMs = previous.timeMs,
+                            endMs = current.timeMs,
+                            seedMs = (previous.timeMs + current.timeMs) / 2L,
+                            peakScore = visualScore,
+                            reason = CandidateReason.VisualChange,
+                            sampleCount = 1,
+                            fromNumber = previous.state.value,
+                            toNumber = current.state.value,
+                            fromStateStable = previous.state.stable,
+                            toStateStable = current.state.stable
+                        )
+                    }
+                }
+                AppLog.i(
+                    context,
+                    tag,
+                    "[timeline] checkpoints=${checkpointTimeline.size} median=${threshold.median} mad=${threshold.mad} threshold=${threshold.threshold} candidates=${candidateWindows.size}"
+                )
             }
 
             val candidateTimestampLog = candidateWindows.joinToString(",") { it.seedMs.toString() }
@@ -3025,7 +3074,18 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 val isCheckpointInterval = frameStepMs >= 60_000L &&
                     candidateEnd - candidateStart >= frameStepMs * 9L / 10L
 
-                val beforeNumber = if (isCheckpointInterval) {
+                if (isCheckpointInterval && candidate.fromStateStable && candidate.toStateStable) {
+                    val semantic = classifyTransition(candidate.fromNumber, candidate.toNumber)
+                    if (!semantic.accepted || !semantic.sequential) {
+                        rejectedCandidates++
+                        AppLog.i(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=rejected-non-sequential state=${semantic.label}")
+                        return@withTimeout
+                    }
+                }
+
+                val beforeNumber = if (candidate.fromStateStable) {
+                    TimedDetection(candidate.fromNumber, 0, candidateStart)
+                } else if (isCheckpointInterval) {
                     detectStableNumberAt(
                         frameProvider, candidateStart, scanWindow, sourceRotationDegrees,
                         scanConfig.ocrFrameWidthPx, durationMs, timing
@@ -3035,7 +3095,9 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     scanWindow, sourceRotationDegrees, scanConfig.ocrFrameWidthPx, timing
                 )
                 ocrCalls += beforeNumber.calls
-                val afterNumber = if (isCheckpointInterval) {
+                val afterNumber = if (candidate.toStateStable) {
+                    TimedDetection(candidate.toNumber, 0, candidateEnd)
+                } else if (isCheckpointInterval) {
                     detectStableNumberAt(
                         frameProvider, candidateEnd, scanWindow, sourceRotationDegrees,
                         scanConfig.ocrFrameWidthPx, durationMs, timing
@@ -3191,13 +3253,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
 
             val artifactPadMs = transitionStyle.edgePaddingMs
             AppLog.i(context, tag, "[clip plan] generating clips thread=${Thread.currentThread().name}")
-            val visualFallbackTransitions = if (uniqueTransitions.isEmpty()) {
-                selectVisualFallbackTransitions(
-                    candidateWindowsForRefine.map { VisualFallbackCandidate(it.seedMs, it.peakScore, it.reason == CandidateReason.VisualChange) },
-                    scanConfig.changeThreshold,
-                    scanConfig.dedupeMs
-                )
-            } else emptyList()
+            // Visual evidence may open an interval, but cannot create a primary-fixture clip.
+            val visualFallbackTransitions = emptyList<Long>()
             val clipTransitions = if (uniqueTransitions.isNotEmpty()) uniqueTransitions else visualFallbackTransitions
             val clipSourceLabel = if (uniqueTransitions.isNotEmpty()) "OCR-confirmed" else "visually inferred"
             if (visualFallbackTransitions.isNotEmpty()) {
@@ -3273,7 +3330,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 fallbackUsed = fallbackUsed || visualFallbackTransitions.isNotEmpty(),
                 failureReason = if (visualFallbackTransitions.isNotEmpty()) "OCR confirmed none; used high-confidence visual fallback" else null,
                 metrics = ScanMetrics(
-                    scannerVersion = "v0.17.5-ocr-retry-direct-checkpoints",
+                    scannerVersion = "v2-hybrid-interval-edge-ocr",
                     wallClockMs = wallClockMs,
                     baselineSamplesEstimate = baselineSamplesEstimate,
                     visualSamples = visualSamples,
@@ -3285,7 +3342,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     rejectedCandidates = rejectedCandidates
                 ),
                 transitionMarks = transitionMarks,
-                candidates = candidateWindows
+                candidates = candidateWindows,
+                checkpointTimeline = checkpointTimeline.toList()
             )
             latestScanReportPath = try {
                 writeScanReport(report)
@@ -3372,26 +3430,36 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         durationMs: Long,
         timing: ScanTimingSummary
     ): TimedDetection {
+        val state = detectStableCheckpointState(
+            frameProvider, centerMs, scanWindow, sourceRotationDegrees,
+            ocrFrameWidthPx, durationMs, timing
+        )
+        return TimedDetection(state.state.value, state.calls, centerMs.takeIf { state.state.stable })
+    }
+
+    private suspend fun detectStableCheckpointState(
+        frameProvider: FrameProvider,
+        centerMs: Long,
+        scanWindow: ScanWindow,
+        sourceRotationDegrees: Int,
+        ocrFrameWidthPx: Int,
+        durationMs: Long,
+        timing: ScanTimingSummary
+    ): TimelineStateDetection {
         val sampleTimes = listOf(-1_000L, -500L, 0L, 500L, 1_000L)
             .map { (centerMs + it).coerceIn(0L, durationMs) }
             .distinct()
-        val values = ArrayList<Int>(sampleTimes.size)
+        val votes = ArrayList<StableStateVote>(sampleTimes.size)
         var calls = 0
         for (sampleMs in sampleTimes) {
             currentCoroutineContext().ensureActive()
-            detectNumberAt(
+            val value = detectNumberAt(
                 frameProvider, sampleMs, scanWindow, sourceRotationDegrees, ocrFrameWidthPx, timing
-            )?.let(values::add)
+            )
+            votes += StableStateVote(sampleMs, value)
             calls++
         }
-        val grouped = values.groupingBy { it }.eachCount()
-        val winner = grouped.maxByOrNull { it.value }
-        val competitorVotes = grouped.filterKeys { it != winner?.key }.values.maxOrNull() ?: 0
-        return if (winner != null && winner.value >= 3 && competitorVotes < 2) {
-            TimedDetection(winner.key, calls, centerMs)
-        } else {
-            TimedDetection(null, calls, null)
-        }
+        return TimelineStateDetection(classifyStableNumberState(votes), calls)
     }
 
     /** Refines a confirmed direct-checkpoint interval without decoding every intervening frame. */
@@ -4505,6 +4573,23 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     })
                 }
             })
+            put("checkpointTimeline", JSONArray().apply {
+                report.checkpointTimeline.forEach { checkpoint ->
+                    put(JSONObject().apply {
+                        put("timeMs", checkpoint.timeMs)
+                        put("stable", checkpoint.state.stable)
+                        put("number", checkpoint.state.value)
+                        put("votes", JSONArray().apply {
+                            checkpoint.state.votes.forEach { vote ->
+                                put(JSONObject().apply {
+                                    put("timestampMs", vote.timestampMs)
+                                    put("number", vote.value)
+                                })
+                            }
+                        })
+                    })
+                }
+            })
             put("transitionMarks", JSONArray().apply {
                 report.transitionMarks.forEach { mark ->
                     put(JSONObject().apply {
@@ -4890,7 +4975,8 @@ private data class ScanFindReport(
     val timing: ScanTimingSummary,
     val metrics: ScanMetrics,
     val transitionMarks: List<TransitionMark>,
-    val candidates: List<TransitionCandidateWindow>
+    val candidates: List<TransitionCandidateWindow>,
+    val checkpointTimeline: List<CheckpointTimelineEntry>
 )
 
 private data class NumberDetectionResult(
@@ -4912,7 +4998,17 @@ private data class TransitionCandidateWindow(
     val seedMs: Long,
     val peakScore: Float,
     val reason: CandidateReason,
-    val sampleCount: Int
+    val sampleCount: Int,
+    val fromNumber: Int? = null,
+    val toNumber: Int? = null,
+    val fromStateStable: Boolean = false,
+    val toStateStable: Boolean = false
+)
+
+private data class CheckpointTimelineEntry(
+    val timeMs: Long,
+    val signature: RoiSignature,
+    val state: StableNumberState
 )
 
 private enum class CandidateReason { InitialProbe, VisualChange, PeriodicProbe }
@@ -4933,6 +5029,11 @@ private data class TimedDetection(
     val value: Int?,
     val calls: Int,
     val timeMs: Long?
+)
+
+private data class TimelineStateDetection(
+    val state: StableNumberState,
+    val calls: Int
 )
 
 private interface FrameProvider : AutoCloseable {
@@ -4979,7 +5080,7 @@ data class ScanMetrics(
 ) {
     companion object {
         fun empty(): ScanMetrics = ScanMetrics(
-            scannerVersion = "v0.17.5-ocr-retry-direct-checkpoints",
+            scannerVersion = "v2-hybrid-interval-edge-ocr",
             wallClockMs = 0L,
             baselineSamplesEstimate = 0,
             visualSamples = 0,
