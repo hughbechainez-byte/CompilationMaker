@@ -1,5 +1,6 @@
 package com.example.compilationmaker
 
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -129,5 +130,49 @@ class OcrConfirmationPolicyTest {
         assertFalse(classifyTransition(9, 6).sequential)
         assertTrue(classifyTransition(null, 1).sequential)
         assertTrue(classifyTransition(6, 7).sequential)
+    }
+
+    @Test
+    fun recursiveInvestigationFindsMultipleTransitionsInsideOneCoarseInterval() = runBlocking {
+        val boundaries = listOf(10_000L, 24_000L, 41_000L)
+        fun stateAt(timeMs: Long): NumberStatePoint {
+            val value = when {
+                timeMs < boundaries[0] -> null
+                timeMs < boundaries[1] -> 1
+                timeMs < boundaries[2] -> 2
+                else -> 3
+            }
+            return NumberStatePoint(timeMs, value, true)
+        }
+        val result = investigateStateInterval(
+            left = stateAt(0L),
+            right = stateAt(60_000L),
+            minLeafMs = 2_000L,
+            maxDepth = 6,
+            maxProbes = 31,
+            sample = { stateAt(it) }
+        )
+        assertEquals(listOf(1, 2, 3), result.intervals.map { it.toNumber })
+        result.intervals.zip(boundaries).forEach { (interval, boundary) ->
+            assertTrue(boundary in interval.startMs..interval.endMs)
+            assertTrue(interval.endMs - interval.startMs <= 2_000L)
+        }
+    }
+
+    @Test
+    fun unstableProbeDoesNotCancelSiblingSemanticTransition() = runBlocking {
+        val result = investigateStateInterval(
+            left = NumberStatePoint(0L, null, true),
+            right = NumberStatePoint(8_000L, 1, true),
+            minLeafMs = 2_000L,
+            maxDepth = 4,
+            maxProbes = 7,
+            sample = { timeMs ->
+                if (timeMs == 4_000L) NumberStatePoint(timeMs, null, false)
+                else NumberStatePoint(timeMs, if (timeMs < 3_000L) null else 1, true)
+            }
+        )
+        assertTrue(result.probes > 1)
+        assertTrue(result.intervals.any { it.fromNumber == null && it.toNumber == 1 })
     }
 }

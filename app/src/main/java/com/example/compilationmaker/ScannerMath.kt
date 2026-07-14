@@ -19,6 +19,72 @@ data class StableNumberState(
     val votes: List<StableStateVote>
 )
 
+data class NumberStatePoint(
+    val timeMs: Long,
+    val value: Int?,
+    val stable: Boolean
+)
+
+data class SemanticStateInterval(
+    val startMs: Long,
+    val endMs: Long,
+    val fromNumber: Int?,
+    val toNumber: Int
+)
+
+data class StateIntervalInvestigation(
+    val intervals: List<SemanticStateInterval>,
+    val probes: Int
+)
+
+/**
+ * Recursively investigates a complete coarse interval.  Unstable samples remain local evidence;
+ * they do not cancel sibling branches or manufacture transitions.
+ */
+suspend fun investigateStateInterval(
+    left: NumberStatePoint,
+    right: NumberStatePoint,
+    minLeafMs: Long = 2_000L,
+    maxDepth: Int = 6,
+    maxProbes: Int = 15,
+    sample: suspend (Long) -> NumberStatePoint
+): StateIntervalInvestigation {
+    val leaves = ArrayList<SemanticStateInterval>()
+    var probes = 0
+
+    suspend fun recurse(a: NumberStatePoint, b: NumberStatePoint, depth: Int) {
+        if (b.timeMs <= a.timeMs) return
+        if (a.stable && b.stable && a.value == b.value) return
+
+        val semantic = if (a.stable && b.stable) classifyTransition(a.value, b.value) else null
+        val spanMs = b.timeMs - a.timeMs
+        if (spanMs <= minLeafMs && a.stable && b.stable) {
+            if (semantic?.sequential == true && b.value != null) {
+                leaves += SemanticStateInterval(a.timeMs, b.timeMs, a.value, b.value)
+            }
+            return
+        }
+        if (depth >= maxDepth || probes >= maxProbes) {
+            if (semantic?.sequential == true && b.value != null) {
+                leaves += SemanticStateInterval(a.timeMs, b.timeMs, a.value, b.value)
+            }
+            return
+        }
+
+        val midpointMs = a.timeMs + spanMs / 2L
+        if (midpointMs <= a.timeMs || midpointMs >= b.timeMs) return
+        val midpoint = sample(midpointMs)
+        probes++
+        recurse(a, midpoint, depth + 1)
+        recurse(midpoint, b, depth + 1)
+    }
+
+    recurse(left, right, 0)
+    val unique = leaves.distinctBy { listOf(it.startMs, it.endMs, it.fromNumber, it.toNumber) }
+        .sortedBy { it.startMs }
+    return StateIntervalInvestigation(unique, probes)
+}
+
 /** Five-sample state voting used by the checkpoint timeline and deterministic tests. */
 fun classifyStableNumberState(votes: List<StableStateVote>): StableNumberState {
     val numbers = votes.mapNotNull { it.value }

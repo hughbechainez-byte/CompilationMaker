@@ -3017,7 +3017,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             progress(CompilationPipelineState.FINALIZING, "Finalizing ${candidateWindows.size} candidates", 44)
             AppLog.i(context, tag, "[finalize] beginning candidate merge thread=${Thread.currentThread().name}")
             val candidateMergeStarted = SystemClock.elapsedRealtime()
-            val candidateWindowsForRefine = try {
+            val mergedCandidateWindows = try {
                 withTimeout(CANDIDATE_MERGE_TIMEOUT_MS) {
                     runInterruptible(Dispatchers.Default) {
                         if (candidateWindows.size <= scanConfig.maxCandidateWindows) {
@@ -3043,12 +3043,33 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 tag,
                 "[finalize] candidate merge completed in ${SystemClock.elapsedRealtime() - candidateMergeStarted} ms thread=${Thread.currentThread().name}"
             )
-            if (candidateWindowsForRefine.size != candidateWindows.size) {
+            if (mergedCandidateWindows.size != candidateWindows.size) {
                 progress(
                     CompilationPipelineState.FINALIZING,
-                    "Speed cap: refining ${candidateWindowsForRefine.size}/${candidateWindows.size} candidate windows",
+                    "Speed cap: refining ${mergedCandidateWindows.size}/${candidateWindows.size} candidate windows",
                     45
                 )
+            }
+
+            val candidateWindowsForRefine = if (frameStepMs >= 60_000L) {
+                val investigated = investigateCheckpointCandidateIntervals(
+                    candidates = mergedCandidateWindows,
+                    frameProvider = retrieverFrameProvider,
+                    scanWindow = scanWindow,
+                    sourceRotationDegrees = sourceRotationDegrees,
+                    durationMs = durationMs,
+                    ocrFrameWidthPx = scanConfig.ocrFrameWidthPx,
+                    timing = timing
+                )
+                ocrCalls += investigated.calls
+                AppLog.i(
+                    context,
+                    tag,
+                    "[timeline] recursive probes=${investigated.probes} semantic leaves=${investigated.candidates.size}"
+                )
+                investigated.candidates
+            } else {
+                mergedCandidateWindows
             }
 
             var hasCapturedFirstOne = false
@@ -3069,7 +3090,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 val sampleEnd = min(durationMs, candidateEnd + scanConfig.prefirstProbeMs)
                 val centerMs = candidate.seedMs.coerceIn(sampleStart, sampleEnd)
                 val isCheckpointInterval = frameStepMs >= 60_000L &&
-                    candidateEnd - candidateStart >= frameStepMs * 9L / 10L
+                    candidate.fromStateStable && candidate.toStateStable
 
                 if (isCheckpointInterval && candidate.fromStateStable && candidate.toStateStable) {
                     val semantic = classifyTransition(candidate.fromNumber, candidate.toNumber)
@@ -3464,6 +3485,97 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             calls++
         }
         return TimelineStateDetection(classifyStableNumberState(votes), calls)
+    }
+
+    private suspend fun investigateCheckpointCandidateIntervals(
+        candidates: List<TransitionCandidateWindow>,
+        frameProvider: FrameProvider,
+        scanWindow: ScanWindow,
+        sourceRotationDegrees: Int,
+        durationMs: Long,
+        ocrFrameWidthPx: Int,
+        timing: ScanTimingSummary
+    ): CheckpointCandidateInvestigation {
+        val output = ArrayList<TransitionCandidateWindow>()
+        val cache = HashMap<Long, StableNumberState>()
+        var calls = 0
+        var probes = 0
+
+        suspend fun stateAt(timeMs: Long): NumberStatePoint {
+            val safeTimeMs = timeMs.coerceIn(0L, durationMs)
+            val state = cache[safeTimeMs] ?: detectStableCheckpointState(
+                frameProvider,
+                safeTimeMs,
+                scanWindow,
+                sourceRotationDegrees,
+                ocrFrameWidthPx,
+                durationMs,
+                timing
+            ).also { detection ->
+                calls += detection.calls
+                cache[safeTimeMs] = detection.state
+            }.state
+            return NumberStatePoint(safeTimeMs, state.value, state.stable)
+        }
+
+        for (candidate in candidates) {
+            currentCoroutineContext().ensureActive()
+            val left = if (candidate.fromStateStable) {
+                NumberStatePoint(candidate.startMs, candidate.fromNumber, true)
+            } else {
+                stateAt(candidate.startMs)
+            }
+            val right = if (candidate.toStateStable) {
+                NumberStatePoint(candidate.endMs, candidate.toNumber, true)
+            } else {
+                stateAt(candidate.endMs)
+            }
+
+            // Stable-equal endpoints cannot contain a valid monotonic Video A transition.
+            if (left.stable && right.stable && left.value == right.value) continue
+            val knownSemanticChange = left.stable && right.stable && left.value != right.value
+            val investigation = investigateStateInterval(
+                left = left,
+                right = right,
+                minLeafMs = 2_000L,
+                maxDepth = 6,
+                maxProbes = if (knownSemanticChange) 15 else 3,
+                sample = { timeMs -> stateAt(timeMs) }
+            )
+            probes += investigation.probes
+            investigation.intervals.forEach { interval ->
+                output += candidate.copy(
+                    startMs = interval.startMs,
+                    endMs = interval.endMs,
+                    seedMs = interval.startMs + (interval.endMs - interval.startMs) / 2L,
+                    fromNumber = interval.fromNumber,
+                    toNumber = interval.toNumber,
+                    fromStateStable = true,
+                    toStateStable = true
+                )
+            }
+
+            // If an unstable midpoint prevented narrowing an already valid semantic pair, retain
+            // the original complete interval for the exact-boundary pass.
+            if (investigation.intervals.isEmpty()) {
+                val semantic = classifyTransition(left.value.takeIf { left.stable }, right.value.takeIf { right.stable })
+                if (left.stable && right.stable && semantic.sequential) {
+                    output += candidate.copy(
+                        fromNumber = left.value,
+                        toNumber = right.value,
+                        fromStateStable = true,
+                        toStateStable = true
+                    )
+                }
+            }
+        }
+
+        return CheckpointCandidateInvestigation(
+            candidates = output.distinctBy { listOf(it.startMs, it.endMs, it.fromNumber, it.toNumber) }
+                .sortedBy { it.startMs },
+            calls = calls,
+            probes = probes
+        )
     }
 
     /** Refines a confirmed direct-checkpoint interval without decoding every intervening frame. */
@@ -5064,6 +5176,12 @@ private data class NumberDetectionEvidence(
 private data class TimelineStateDetection(
     val state: StableNumberState,
     val calls: Int
+)
+
+private data class CheckpointCandidateInvestigation(
+    val candidates: List<TransitionCandidateWindow>,
+    val calls: Int,
+    val probes: Int
 )
 
 private interface FrameProvider : AutoCloseable {
