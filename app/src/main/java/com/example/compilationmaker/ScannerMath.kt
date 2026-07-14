@@ -168,7 +168,7 @@ fun checkpointInvestigationProbeLimit(
     toNumber: Int?
 ): Int {
     val semanticEndpoints = leftStable && rightStable && fromNumber != toNumber
-    return if (semanticEndpoints) 15 else 1
+    return if (semanticEndpoints) 3 else 1
 }
 
 data class HysteresisDecision(

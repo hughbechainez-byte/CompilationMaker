@@ -112,7 +112,7 @@ class ScannerMathTest {
     fun visualOnlyIntervalsReceiveOneProbeWhileSemanticEndpointsMayBisect() {
         assertEquals(1, checkpointInvestigationProbeLimit(false, false, null, null))
         assertEquals(1, checkpointInvestigationProbeLimit(true, false, 4, null))
-        assertEquals(15, checkpointInvestigationProbeLimit(true, true, 4, 5))
+        assertEquals(3, checkpointInvestigationProbeLimit(true, true, 4, 5))
     }
 
     @Test
