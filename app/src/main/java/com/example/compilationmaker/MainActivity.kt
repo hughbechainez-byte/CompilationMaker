@@ -3520,26 +3520,32 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
 
         for (candidate in candidates) {
             currentCoroutineContext().ensureActive()
-            val left = if (candidate.fromStateStable) {
-                NumberStatePoint(candidate.startMs, candidate.fromNumber, true)
-            } else {
-                stateAt(candidate.startMs)
-            }
-            val right = if (candidate.toStateStable) {
-                NumberStatePoint(candidate.endMs, candidate.toNumber, true)
-            } else {
-                stateAt(candidate.endMs)
-            }
+            // Endpoint states were already classified by the five-sample coarse timeline. Reusing
+            // them avoids repeating up to ten decoded OCR frames for every visual-only interval.
+            val left = NumberStatePoint(
+                candidate.startMs,
+                candidate.fromNumber,
+                candidate.fromStateStable
+            )
+            val right = NumberStatePoint(
+                candidate.endMs,
+                candidate.toNumber,
+                candidate.toStateStable
+            )
 
             // Stable-equal endpoints cannot contain a valid monotonic Video A transition.
             if (left.stable && right.stable && left.value == right.value) continue
-            val knownSemanticChange = left.stable && right.stable && left.value != right.value
             val investigation = investigateStateInterval(
                 left = left,
                 right = right,
                 minLeafMs = 2_000L,
                 maxDepth = 6,
-                maxProbes = if (knownSemanticChange) 15 else 3,
+                maxProbes = checkpointInvestigationProbeLimit(
+                    left.stable,
+                    right.stable,
+                    left.value,
+                    right.value
+                ),
                 sample = { timeMs -> stateAt(timeMs) }
             )
             probes += investigation.probes

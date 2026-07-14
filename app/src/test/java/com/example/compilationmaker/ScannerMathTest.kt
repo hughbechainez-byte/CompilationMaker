@@ -100,6 +100,22 @@ class ScannerMathTest {
     }
 
     @Test
+    fun videoAUsesExactlySixtyOneCheckpointsWithoutRedundantTailSeek() {
+        val checkpoints = generateCheckpointTimestamps(3_600_500L, 60_000L)
+
+        assertEquals(61, checkpoints.size)
+        assertEquals(0L, checkpoints.first())
+        assertEquals(3_600_000L, checkpoints.last())
+    }
+
+    @Test
+    fun visualOnlyIntervalsReceiveOneProbeWhileSemanticEndpointsMayBisect() {
+        assertEquals(1, checkpointInvestigationProbeLimit(false, false, null, null))
+        assertEquals(1, checkpointInvestigationProbeLimit(true, false, 4, null))
+        assertEquals(15, checkpointInvestigationProbeLimit(true, true, 4, 5))
+    }
+
+    @Test
     fun supportedTransitionStatesIncludeNoNumberToOneAndOneToTwo() {
         assertEquals("null -> 1", classifyTransition(null, 1).label)
         assertTrue(classifyTransition(null, 1).accepted)

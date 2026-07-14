@@ -155,8 +155,20 @@ fun generateCheckpointTimestamps(durationMs: Long, intervalMs: Long): List<Long>
         if (next <= cursor) break
         cursor = next
     }
-    if (result.isEmpty() || result.last() != durationMs) result += durationMs
+    val tailMs = durationMs - (result.lastOrNull() ?: 0L)
+    // Avoid a redundant near-duration seek (Video A is 3,600,500 ms, so this keeps 61 points).
+    if (result.isEmpty() || (result.last() != durationMs && tailMs > 1_000L)) result += durationMs
     return result
+}
+
+fun checkpointInvestigationProbeLimit(
+    leftStable: Boolean,
+    rightStable: Boolean,
+    fromNumber: Int?,
+    toNumber: Int?
+): Int {
+    val semanticEndpoints = leftStable && rightStable && fromNumber != toNumber
+    return if (semanticEndpoints) 15 else 1
 }
 
 data class HysteresisDecision(
