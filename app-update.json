@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.14",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.14",
+  "version": "v0.17.15",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.15",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.14/CompilationMaker-v0.17.14.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.15/CompilationMaker-v0.17.15.apk"
   },
-  "notes": "Checkpoint intervals now retain their full evidence range, use five-sample stable-state voting and bounded boundary refinement. Processing continues in the background with a live picture-in-picture status view.",
+  "notes": "Scanner now builds a five-sample stable number-state timeline at 60-second checkpoints, retains complete candidate intervals, rejects non-sequential state changes, and records checkpoint votes in scan evidence.",
   "updates": [
+    {
+      "version": "v0.17.15",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.15",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.15/CompilationMaker-v0.17.15.apk",
+      "notes": "Stable checkpoint state timeline, complete candidate intervals, adaptive visual threshold, semantic rejection, and structured vote evidence."
+    },
     {
       "version": "v0.17.14",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.14",
