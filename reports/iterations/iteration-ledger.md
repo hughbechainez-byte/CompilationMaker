@@ -31,3 +31,19 @@
 - Earliest failure: Gradual style padding and merge-gap policy combines the first two exact semantic windows, then previous-sync-sample muxing expands nine planned clips to 473.059s instead of ten clips/400s.
 - Validation: exact GitHub APK on API 35, Launcher resumed, foreground service verified, 61 checkpoints, complete raw/final/topology evidence, report/output pull, host-only Video B ffprobe/SSIM/audio diagnostics, and five-line Desktop log.
 - Decision/next hypothesis: accept topology as the scanner baseline; enforce exact unpadded non-overlapping clip windows and replace sync-seeking mux export with Media3 Transformer composition plus automated A/B gates.
+
+## v0.17.25 — rejected report/export checkpoint
+
+- Commit/artifact: `0263796`; exact released APK SHA-256 `E76B4910F6FA2C3D90B9FD702D2FAD33F1524B18238EB0504FCD3F1BA8FC6B40`.
+- Hypothesis/result: exact Media3 windows plus provisional recovery would produce a testable output; the Activity-closed run stayed healthy for 898.823s, completed 61 checkpoints, then failed before export on `Forbidden numeric value: Infinity`.
+- Earliest failure: confirmed plan points used a non-finite visual-score sentinel that Android `JSONObject` refuses; eight confirmed candidates were also duplicated as provisional-high points, widening ten windows to 496.096s.
+- Validation: exact GitHub APK on API 35, Launcher resumed, foreground service/notification verified, Video B absent from emulator, full logcat, instrumentation transcript, restored failure screenshot, and host-only fixture hashes.
+- Decision/next hypothesis: reject v0.17.25; make every report number finite, suppress provisional evidence for already-confirmed candidates, and gate the pure plan at ten points/ten clips/400.000s before the next release.
+
+## v0.17.26 — rejected confirmation-budget checkpoint
+
+- Commit/artifact: `583f602`; exact GitHub release `v0.17.26` SHA-256 `975B1B03BD21291753CD6DA3918887A173555F7AF0DE7CBFBFFEAF5655E8D7A7`.
+- Hypothesis/result: finite report values and confirmed-candidate suppression would reach export; the exact Activity-closed run stayed alive, completed 61 checkpoints/14 candidates/30 probes, and confirmed six valid transitions before remaining `REFINING` at 914.450s.
+- Earliest failure: the global confirmation budget reached zero after `5 -> 6`; candidate 7 onward remained unconfirmed and the 15-minute instrumentation deadline stopped the run before plan selection, report copy, or Media3 export.
+- Validation: exact published APK on API 35, Launcher resumed, PiP Activity closure, foreground WorkManager service/notification, Video B absent from emulator, full logcat, instrumentation transcript, and fixture hashes.
+- Decision/next hypothesis: keep the report-safe/deduplication fix; pause here as requested. The next iteration must make confirmation budget/resumption explicit before pursuing export/A-B metrics.
