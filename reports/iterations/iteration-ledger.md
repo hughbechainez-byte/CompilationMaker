@@ -23,3 +23,11 @@
 - Earliest failures: candidate coverage is complete, but `6 -> 7`, `8 -> 9`, and `9 -> 10` remain unresolved while coarse votes alternate between `6` and `9`.
 - Validation: exact GitHub APK on API 35, Activity closed with launcher resumed, foreground WorkManager service verified, 61 checkpoints, report/output pull, and host Video B comparison.
 - Decision/next hypothesis: accept the timeout repair; preserve this runtime baseline and add a confidence-preserving, pure topology adjudicator only for ML Kit `6`/`9` results.
+
+## v0.17.24 — accepted topology / state-timeline checkpoint
+
+- Commit/artifact: `dc218dc`; exact released APK SHA-256 `684127A92CE25E6265A90CE4809589111BA05BC841E7D22D1EF427B512D77D99`.
+- Hypothesis/result: confidence-preserving ML Kit evidence plus conservative two-threshold glyph topology would eliminate false `6/9` states; the Activity-closed run reached TP=10, FP=0, FN=0, 100% recall, 14 candidates, 556 OCR calls, and zero timeouts in 556.466s.
+- Earliest failure: Gradual style padding and merge-gap policy combines the first two exact semantic windows, then previous-sync-sample muxing expands nine planned clips to 473.059s instead of ten clips/400s.
+- Validation: exact GitHub APK on API 35, Launcher resumed, foreground service verified, 61 checkpoints, complete raw/final/topology evidence, report/output pull, host-only Video B ffprobe/SSIM/audio diagnostics, and five-line Desktop log.
+- Decision/next hypothesis: accept topology as the scanner baseline; enforce exact unpadded non-overlapping clip windows and replace sync-seeking mux export with Media3 Transformer composition plus automated A/B gates.

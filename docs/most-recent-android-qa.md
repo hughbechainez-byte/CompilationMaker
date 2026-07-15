@@ -1,9 +1,10 @@
 # Most Recent Android QA Note
 
-- Status: FAIL — exact published v0.17.23 restored the Activity-closed semantic result to 7/10 transitions (6 exported clips) and eliminated candidate timeouts, but the primary fixture still misses three transitions.
-- App/version: 0.17.23 (versionCode 55), commit `4b1701a2213b5f503322fb6afba695532a82f3f9`, release tag `v0.17.23`.
-- Published APK: `CompilationMaker-v0.17.23.apk`, SHA-256 `24C07854FB337F1042B683FA4BD5A6EF99C65C8817026A841B7C91BFE9DFD197`; test APK SHA-256 `0600DFC65A35396A1E5DD6FD773BE95EE59F451660973519CCE8451FE9F3278D`.
-- Fixtures: Video A SHA-256 `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`; host-side Video B SHA-256 `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`.
-- Emulator evidence: API 35 `emulator-5554`; Activity closed with launcher resumed, foreground WorkManager service verified, 61 checkpoints, 22 complete candidates, 625 OCR calls, zero candidate timeouts; 438.614-second instrumentation / 416.463-second scan.
-- Output comparison: 330.601 seconds, 6 clips, 3,144,919 bytes; Video B is 400.000 seconds, 10 clips, 4,495,038 bytes; precision 100%, recall 70% (7 transition matches, including `null -> 1`).
-- First unresolved causal failure: checkpoint voting repeatedly flips `6` and `9`, preventing `6 -> 7`, `8 -> 9`, and `9 -> 10` despite complete candidate coverage; add confidence-preserving topology adjudication before any interval-bridging change.
+- Status: FAIL overall / PASS scanner semantics — exact published v0.17.24 reached all 10 sequential Video A transitions with zero false positives, but the primary fixture still exported 9 padded/merged clips instead of 10 exact clips.
+- App/version: 0.17.24 (versionCode 56), commit `dc218dc013ee77b3cf5d6c2f6eb8aff4ebbf4856`, release tag `v0.17.24`, GitHub Actions run `29398169927` succeeded.
+- Published APK: `CompilationMaker-v0.17.24.apk`, SHA-256 `684127A92CE25E6265A90CE4809589111BA05BC841E7D22D1EF427B512D77D99`; test APK SHA-256 `0600DFC65A35396A1E5DD6FD773BE95EE59F451660973519CCE8451FE9F3278D`.
+- Fixtures: Video A SHA-256 `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`; host-only Video B SHA-256 `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`. Video B was removed from the emulator before testing.
+- Emulator evidence: API 35 `emulator-5554`; Activity closed with Launcher resumed; foreground WorkManager service and persistent notification verified; terminal instrumentation runtime 556.466 seconds.
+- Scanner evidence: 61 checkpoints, 14 complete candidates, 30 preserved recursive probes, 556 OCR calls, zero candidate timeouts, 10 accepted / 0 rejected marks, TP=10 FP=0 FN=0, precision=100%, recall=100%, fallback=false. All boundary errors were -235 ms except `9 -> 10` at -79 ms.
+- Output comparison: worker terminal success but instrumentation failed `expected 10 clips, was 9`; output 473.059 seconds and 4,565,178 bytes versus Video B 400.000 seconds and 4,495,038 bytes. Full-frame 2 fps SSIM mean=0.987709/p5=0.972179 with zero sub-0.90 outside-exclusion samples; audio correlation is undefined because both decoded tracks are all-zero PCM.
+- First unresolved causal failure: Gradual style applies +/-3-second edge padding and a 5-second merge gap, merging the first two otherwise non-overlapping 40-second windows; the manual sync-sample exporter then expands nine planned windows to 473.059 seconds. Enforce exact clip plans and use Media3 exact-boundary composition next.
