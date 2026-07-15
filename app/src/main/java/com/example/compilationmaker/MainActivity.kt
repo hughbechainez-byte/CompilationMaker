@@ -2695,6 +2695,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             var candidateTimeouts = 0
             val transitionMarks = ArrayList<TransitionMark>()
             val checkpointTimeline = ArrayList<CheckpointTimelineEntry>()
+            val recursiveStateEvidence = ArrayList<StateTimelineEvidenceEntry>()
             try {
                 retrieverFrameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
                     if (stopCoarseScan) {
@@ -2842,6 +2843,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     previousSignature = null
                     previousCheckpointMs = null
                     checkpointTimeline.clear()
+                    recursiveStateEvidence.clear()
                     val retryDecodeStart = SystemClock.elapsedRealtime()
                     retrieverFrameProvider.forEachFrameInWindow(0L, durationMs, adaptiveStepMs, scanConfig.signatureScaleWidthPx) { decoded ->
                         if (SystemClock.elapsedRealtime() - scanStartRealtime >= scanConfig.totalScanBudgetMs) {
@@ -3063,6 +3065,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     timing = timing
                 )
                 ocrCalls += investigated.calls
+                recursiveStateEvidence += investigated.stateEvidence
                 AppLog.i(
                     context,
                     tag,
@@ -3365,7 +3368,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 fallbackUsed = fallbackUsed || visualFallbackTransitions.isNotEmpty(),
                 failureReason = if (visualFallbackTransitions.isNotEmpty()) "OCR confirmed none; used high-confidence visual fallback" else null,
                 metrics = ScanMetrics(
-                    scannerVersion = "v2-hybrid-interval-edge-ocr",
+                    scannerVersion = "v3-stable-state-topology-ocr",
                     wallClockMs = wallClockMs,
                     baselineSamplesEstimate = baselineSamplesEstimate,
                     visualSamples = visualSamples,
@@ -3379,7 +3382,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 ),
                 transitionMarks = transitionMarks,
                 candidates = candidateWindows,
-                checkpointTimeline = checkpointTimeline.toList()
+                checkpointTimeline = checkpointTimeline.toList(),
+                recursiveStateEvidence = recursiveStateEvidence.toList()
             )
             latestScanReportPath = try {
                 writeScanReport(report)
@@ -3496,7 +3500,16 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 timestampMs = sampleMs,
                 value = evidence.value,
                 decodedTimestampMs = evidence.decodedTimestampMs,
-                status = evidence.status
+                status = evidence.status,
+                mlKitValue = evidence.mlKitValue,
+                mlKitConfidence = evidence.mlKitConfidence,
+                rawText = evidence.rawText,
+                preprocessingBranch = evidence.preprocessingBranch,
+                mlKitStructure = evidence.mlKitStructure,
+                topology = evidence.topology,
+                cropMs = evidence.cropMs,
+                preprocessMs = evidence.preprocessMs,
+                ocrMs = evidence.ocrMs
             )
             calls++
         }
@@ -3514,6 +3527,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
     ): CheckpointCandidateInvestigation {
         val output = ArrayList<TransitionCandidateWindow>()
         val cache = HashMap<Long, StableNumberState>()
+        val stateEvidence = ArrayList<StateTimelineEvidenceEntry>()
         var calls = 0
         var probes = 0
 
@@ -3530,6 +3544,11 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             ).also { detection ->
                 calls += detection.calls
                 cache[safeTimeMs] = detection.state
+                stateEvidence += StateTimelineEvidenceEntry(
+                    timeMs = safeTimeMs,
+                    source = "recursive-candidate-probe",
+                    state = detection.state
+                )
             }.state
             return NumberStatePoint(safeTimeMs, state.value, state.stable)
         }
@@ -3596,7 +3615,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             candidates = output.distinctBy { listOf(it.startMs, it.endMs, it.fromNumber, it.toNumber) }
                 .sortedBy { it.startMs },
             calls = calls,
-            probes = probes
+            probes = probes,
+            stateEvidence = stateEvidence.sortedBy { it.timeMs }
         )
     }
 
@@ -3854,14 +3874,27 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                         } finally {
                             fallbackFrame.recycle()
                         }
-                        if (fallbackDetection.confidence >= detection.confidence) {
+                        if (numberDetectionScore(fallbackDetection) >= numberDetectionScore(detection)) {
                             detection = fallbackDetection
                             selectedDecodedTimestampMs = decoded?.timeMs ?: selectedDecodedTimestampMs
                         }
                     }
                 }
             }
-            NumberDetectionEvidence(detection.value, selectedDecodedTimestampMs, detection.status.name)
+            NumberDetectionEvidence(
+                value = detection.value,
+                decodedTimestampMs = selectedDecodedTimestampMs,
+                status = detection.status.name,
+                mlKitValue = detection.mlKitValue,
+                mlKitConfidence = detection.confidence,
+                rawText = detection.rawText,
+                preprocessingBranch = detection.branch,
+                mlKitStructure = detection.mlKitStructure,
+                topology = detection.topology,
+                cropMs = detection.cropMs,
+                preprocessMs = detection.preprocessMs,
+                ocrMs = detection.ocrMs
+            )
         } finally {
             localFrame.recycle()
         }
@@ -4079,7 +4112,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 { source -> binarizeForDigitRecognition(source, invert = false).also(temporaries::add) to "threshold" },
                 { source -> binarizeForDigitRecognition(source, invert = true).also(temporaries::add) to "inverted-threshold" }
             )
-            var best: DigitRecognition? = null
+            var best: NumberDetectionResult? = null
             var totalOcrMs = 0L
             for ((attemptIndex, prepare) in attempts.withIndex()) {
                 val prepareStarted = System.currentTimeMillis()
@@ -4090,28 +4123,44 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 val detection = digitRecognizer.recognize(bitmap, branch)
                 val branchDuration = System.currentTimeMillis() - branchStart
                 totalOcrMs += branchDuration
-                AppLog.d(context, tag, "[ocr] variant=$branch durationMs=$branchDuration status=${detection.status} parsed=${detection.value ?: "none"}")
-                val candidateScore = when {
-                    detection.value == null -> detection.confidence * 0.35f
-                    detection.rawText.length <= 3 -> detection.confidence + 0.1f
-                    else -> detection.confidence
-                }
+                val adjudication = adjudicateDigitRecognition(detection, scaled)
+                val attemptResult = NumberDetectionResult(
+                    value = adjudication.value,
+                    cropMs = cropMs,
+                    preprocessMs = preprocessMs,
+                    ocrMs = branchDuration,
+                    confidence = detection.confidence,
+                    rawText = detection.rawText,
+                    branch = detection.branch,
+                    status = adjudication.status,
+                    mlKitValue = detection.value,
+                    mlKitStructure = detection.structure,
+                    topology = adjudication.topology
+                )
+                AppLog.d(
+                    context,
+                    tag,
+                    "[ocr] variant=$branch durationMs=$branchDuration mlKit=${detection.value ?: "none"} confidence=${detection.confidence} topology=${adjudication.topology?.decision ?: SixNineDecision.NOT_APPLICABLE} final=${attemptResult.value ?: "none"} status=${attemptResult.status}"
+                )
                 val currentBest = best
-                val bestScore = when {
-                    currentBest == null -> Float.NEGATIVE_INFINITY
-                    currentBest.value == null -> currentBest.confidence * 0.35f
-                    currentBest.rawText.length <= 3 -> currentBest.confidence + 0.1f
-                    else -> currentBest.confidence
+                if (currentBest == null || numberDetectionScore(attemptResult) > numberDetectionScore(currentBest)) {
+                    best = attemptResult
                 }
-                if (best == null || candidateScore > bestScore) {
-                    best = detection
-                }
-                val chosen = best
-                if (!shouldTryNextOcrVariant(attemptIndex, detection)) break
+                val chosen = best ?: attemptResult
+                if (
+                    attemptResult.value != null &&
+                    (detection.value == 6 || detection.value == 9) &&
+                    adjudication.topology?.confidence?.let { it >= SixNineTopologyPolicy.MIN_OVERRIDE_CONFIDENCE } == true
+                ) break
+                val tryNext = attemptResult.status == OcrCandidateStatus.AMBIGUOUS_TOPOLOGY ||
+                    shouldTryNextOcrVariant(attemptIndex, detection)
+                if (!tryNext) break
                 if (attemptIndex == 2 && chosen.value != null) break
             }
-            val chosen = best ?: DigitRecognition(null, "", 0f, "raw")
-            NumberDetectionResult(chosen.value, cropMs, preprocessMs, totalOcrMs, chosen.confidence, chosen.rawText, chosen.branch)
+            (best ?: NumberDetectionResult(null, cropMs, preprocessMs, totalOcrMs, 0f)).copy(
+                preprocessMs = preprocessMs,
+                ocrMs = totalOcrMs
+            )
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (timeout: OcrRecognitionTimeoutException) {
@@ -4130,6 +4179,49 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 normalizedFrame.recycle()
             }
         }
+    }
+
+    private fun adjudicateDigitRecognition(
+        recognition: DigitRecognition,
+        topologySource: Bitmap
+    ): OcrAdjudication {
+        val mlKitValue = recognition.value
+        if (mlKitValue == null) {
+            val status = when (recognition.status) {
+                DigitRecognitionStatus.NO_TEXT -> OcrCandidateStatus.NO_TEXT
+                DigitRecognitionStatus.NO_VALID_INTEGER -> OcrCandidateStatus.INVALID_INTEGER
+                DigitRecognitionStatus.TIMEOUT -> OcrCandidateStatus.OCR_TIMEOUT
+                DigitRecognitionStatus.ML_KIT_FAILURE -> OcrCandidateStatus.OCR_UNAVAILABLE
+                DigitRecognitionStatus.PARSED -> OcrCandidateStatus.INVALID_INTEGER
+            }
+            return OcrAdjudication(null, status, null)
+        }
+        if (!shouldAdjudicateSixOrNine(mlKitValue)) {
+            return OcrAdjudication(mlKitValue, OcrCandidateStatus.CONFIRMED_TRANSITION, null)
+        }
+
+        val plane = extractTopologyLuma(topologySource, recognition.structure?.primaryGlyphBounds())
+        val topology = plane?.let { classifySixOrNine(it.values, it.width, it.height) }
+        val finalValue = adjudicateSixOrNineValue(mlKitValue, topology)
+        return if (finalValue != null) {
+            OcrAdjudication(finalValue, OcrCandidateStatus.CONFIRMED_TRANSITION, topology)
+        } else {
+            OcrAdjudication(null, OcrCandidateStatus.AMBIGUOUS_TOPOLOGY, topology)
+        }
+    }
+
+    private fun numberDetectionScore(result: NumberDetectionResult): Float {
+        val disposition = when (result.status) {
+            OcrCandidateStatus.CONFIRMED_TRANSITION -> 2f
+            OcrCandidateStatus.AMBIGUOUS_TOPOLOGY -> 1f
+            OcrCandidateStatus.INVALID_INTEGER -> 0.4f
+            OcrCandidateStatus.NO_TEXT, OcrCandidateStatus.NO_TRANSITION -> 0.2f
+            OcrCandidateStatus.OCR_UNAVAILABLE,
+            OcrCandidateStatus.OCR_TIMEOUT,
+            OcrCandidateStatus.INVALID_FRAME -> 0f
+        }
+        return disposition + result.confidence.coerceIn(0f, 1f) * 0.25f +
+            (result.topology?.confidence ?: 0f) * 0.25f
     }
 
     private fun createSafeInputImage(bitmap: Bitmap, label: String): InputImage {
@@ -4717,21 +4809,12 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             })
             put("checkpointTimeline", JSONArray().apply {
                 report.checkpointTimeline.forEach { checkpoint ->
-                    put(JSONObject().apply {
-                        put("timeMs", checkpoint.timeMs)
-                        put("stable", checkpoint.state.stable)
-                        put("number", checkpoint.state.value)
-                        put("votes", JSONArray().apply {
-                            checkpoint.state.votes.forEach { vote ->
-                                put(JSONObject().apply {
-                                    put("timestampMs", vote.timestampMs)
-                                    put("decodedTimestampMs", vote.decodedTimestampMs)
-                                    put("number", vote.value)
-                                    put("status", vote.status)
-                                })
-                            }
-                        })
-                    })
+                    put(stableStateEvidenceJson(checkpoint.timeMs, "coarse-checkpoint", checkpoint.state))
+                }
+            })
+            put("recursiveStateEvidence", JSONArray().apply {
+                report.recursiveStateEvidence.forEach { evidence ->
+                    put(stableStateEvidenceJson(evidence.timeMs, evidence.source, evidence.state))
                 }
             })
             put("transitionMarks", JSONArray().apply {
@@ -4768,6 +4851,130 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         }
         output.writeText(payload.toString(2))
         return output.absolutePath
+    }
+
+    private fun stableStateEvidenceJson(
+        timeMs: Long,
+        source: String,
+        state: StableNumberState
+    ): JSONObject = JSONObject().apply {
+        put("timeMs", timeMs)
+        put("source", source)
+        put("stable", state.stable)
+        put("number", state.value ?: JSONObject.NULL)
+        put("votes", JSONArray().apply {
+            state.votes.forEach { vote ->
+                put(JSONObject().apply {
+                    put("timestampMs", vote.timestampMs)
+                    put("decodedTimestampMs", vote.decodedTimestampMs ?: JSONObject.NULL)
+                    put("number", vote.value ?: JSONObject.NULL)
+                    put("status", vote.status)
+                    put("mlKitValue", vote.mlKitValue ?: JSONObject.NULL)
+                    put("mlKitConfidence", vote.mlKitConfidence ?: JSONObject.NULL)
+                    put("rawText", vote.rawText)
+                    put("preprocessingBranch", vote.preprocessingBranch)
+                    put("mlKitStructure", vote.mlKitStructure?.let(::mlKitStructureJson) ?: JSONObject.NULL)
+                    put(
+                        "topology",
+                        vote.topology?.let(::glyphTopologyJson) ?: JSONObject().apply {
+                            put("decision", SixNineDecision.NOT_APPLICABLE.name)
+                            put("reason", "complete ML Kit integer was not adjudicated as 6/9")
+                        }
+                    )
+                    put("timing", JSONObject().apply {
+                        put("cropMs", vote.cropMs)
+                        put("preprocessMs", vote.preprocessMs)
+                        put("ocrMs", vote.ocrMs)
+                    })
+                })
+            }
+        })
+    }
+
+    private fun mlKitStructureJson(evidence: MlKitRecognitionEvidence): JSONObject = JSONObject().apply {
+        put("parsedValue", evidence.parsedValue)
+        put("matchedText", evidence.matchedText)
+        put("blockIndex", evidence.blockIndex)
+        put("lineIndex", evidence.lineIndex)
+        put("matchedElementIndex", evidence.matchedElementIndex ?: JSONObject.NULL)
+        put("lineConfidence", evidence.lineConfidence ?: JSONObject.NULL)
+        put("aggregateConfidence", evidence.aggregateConfidence)
+        put("confidenceSource", evidence.confidenceSource)
+        put("lineBounds", evidence.lineBounds?.let(::recognitionBoundsJson) ?: JSONObject.NULL)
+        put("lineCornerPoints", recognitionPointsJson(evidence.lineCornerPoints))
+        put("lineAngleDegrees", evidence.lineAngleDegrees)
+        put("elements", JSONArray().apply {
+            evidence.elements.forEach { element ->
+                put(JSONObject().apply {
+                    put("text", element.text)
+                    put("confidence", element.confidence ?: JSONObject.NULL)
+                    put("bounds", element.bounds?.let(::recognitionBoundsJson) ?: JSONObject.NULL)
+                    put("cornerPoints", recognitionPointsJson(element.cornerPoints))
+                    put("angleDegrees", element.angleDegrees)
+                    put("symbols", JSONArray().apply {
+                        element.symbols.forEach { symbol ->
+                            put(JSONObject().apply {
+                                put("text", symbol.text)
+                                put("confidence", symbol.confidence ?: JSONObject.NULL)
+                                put("bounds", symbol.bounds?.let(::recognitionBoundsJson) ?: JSONObject.NULL)
+                                put("cornerPoints", recognitionPointsJson(symbol.cornerPoints))
+                                put("angleDegrees", symbol.angleDegrees)
+                            })
+                        }
+                    })
+                })
+            }
+        })
+    }
+
+    private fun recognitionBoundsJson(bounds: RecognitionBounds): JSONObject = JSONObject().apply {
+        put("left", bounds.left)
+        put("top", bounds.top)
+        put("right", bounds.right)
+        put("bottom", bounds.bottom)
+    }
+
+    private fun recognitionPointsJson(points: List<RecognitionPoint>): JSONArray = JSONArray().apply {
+        points.forEach { point -> put(JSONObject().apply { put("x", point.x); put("y", point.y) }) }
+    }
+
+    private fun glyphTopologyJson(evidence: GlyphTopologyEvidence): JSONObject = JSONObject().apply {
+        put("decision", evidence.decision.name)
+        put("thresholdMethod", evidence.thresholdMethod)
+        put("thresholdValue", evidence.thresholdValue)
+        put("polarity", evidence.polarity)
+        put("componentArea", evidence.componentArea)
+        put("componentBounds", evidence.componentBounds?.let(::rectLikeJson) ?: JSONObject.NULL)
+        put("holeCount", evidence.holeCount)
+        put("dominantHoleArea", evidence.dominantHoleArea)
+        put("dominantHoleCentroidYNormalized", evidence.dominantHoleCentroidYNormalized ?: JSONObject.NULL)
+        put("confidence", evidence.confidence)
+        put("reason", evidence.reason)
+        put("variants", JSONArray().apply {
+            evidence.variants.forEach { variant ->
+                put(JSONObject().apply {
+                    put("decision", variant.decision.name)
+                    put("thresholdMethod", variant.thresholdMethod)
+                    put("thresholdValue", variant.thresholdValue)
+                    put("polarity", variant.polarity)
+                    put("componentArea", variant.componentArea)
+                    put("componentBounds", variant.componentBounds?.let(::rectLikeJson) ?: JSONObject.NULL)
+                    put("holeCount", variant.holeCount)
+                    put("dominantHoleArea", variant.dominantHoleArea)
+                    put("dominantHoleCentroidYNormalized", variant.dominantHoleCentroidYNormalized ?: JSONObject.NULL)
+                    put("confidence", variant.confidence)
+                    put("structurallyValid", variant.structurallyValid)
+                    put("reason", variant.reason)
+                })
+            }
+        })
+    }
+
+    private fun rectLikeJson(bounds: RectLike): JSONObject = JSONObject().apply {
+        put("left", bounds.left)
+        put("top", bounds.top)
+        put("right", bounds.right)
+        put("bottom", bounds.bottom)
     }
 
     private fun cropToWindow(frame: Bitmap, scanWindow: ScanWindow): Bitmap {
@@ -5120,7 +5327,8 @@ private data class ScanFindReport(
     val metrics: ScanMetrics,
     val transitionMarks: List<TransitionMark>,
     val candidates: List<TransitionCandidateWindow>,
-    val checkpointTimeline: List<CheckpointTimelineEntry>
+    val checkpointTimeline: List<CheckpointTimelineEntry>,
+    val recursiveStateEvidence: List<StateTimelineEvidenceEntry>
 )
 
 private data class NumberDetectionResult(
@@ -5131,10 +5339,22 @@ private data class NumberDetectionResult(
     val confidence: Float = 0f,
     val rawText: String = "",
     val branch: String = "raw",
-    val status: OcrCandidateStatus = if (value == null) OcrCandidateStatus.NO_TRANSITION else OcrCandidateStatus.CONFIRMED_TRANSITION
+    val status: OcrCandidateStatus = if (value == null) OcrCandidateStatus.NO_TRANSITION else OcrCandidateStatus.CONFIRMED_TRANSITION,
+    val mlKitValue: Int? = value,
+    val mlKitStructure: MlKitRecognitionEvidence? = null,
+    val topology: GlyphTopologyEvidence? = null
 )
 
-private enum class OcrCandidateStatus { CONFIRMED_TRANSITION, NO_TRANSITION, OCR_UNAVAILABLE, OCR_TIMEOUT, INVALID_FRAME }
+private enum class OcrCandidateStatus {
+    CONFIRMED_TRANSITION,
+    NO_TRANSITION,
+    NO_TEXT,
+    INVALID_INTEGER,
+    AMBIGUOUS_TOPOLOGY,
+    OCR_UNAVAILABLE,
+    OCR_TIMEOUT,
+    INVALID_FRAME
+}
 
 private data class TransitionCandidateWindow(
     val startMs: Long,
@@ -5152,6 +5372,12 @@ private data class TransitionCandidateWindow(
 private data class CheckpointTimelineEntry(
     val timeMs: Long,
     val signature: RoiSignature,
+    val state: StableNumberState
+)
+
+private data class StateTimelineEvidenceEntry(
+    val timeMs: Long,
+    val source: String,
     val state: StableNumberState
 )
 
@@ -5178,7 +5404,22 @@ private data class TimedDetection(
 private data class NumberDetectionEvidence(
     val value: Int?,
     val decodedTimestampMs: Long?,
-    val status: String
+    val status: String,
+    val mlKitValue: Int? = value,
+    val mlKitConfidence: Float? = null,
+    val rawText: String = "",
+    val preprocessingBranch: String = "",
+    val mlKitStructure: MlKitRecognitionEvidence? = null,
+    val topology: GlyphTopologyEvidence? = null,
+    val cropMs: Long = 0L,
+    val preprocessMs: Long = 0L,
+    val ocrMs: Long = 0L
+)
+
+private data class OcrAdjudication(
+    val value: Int?,
+    val status: OcrCandidateStatus,
+    val topology: GlyphTopologyEvidence?
 )
 
 private data class TimelineStateDetection(
@@ -5189,7 +5430,8 @@ private data class TimelineStateDetection(
 private data class CheckpointCandidateInvestigation(
     val candidates: List<TransitionCandidateWindow>,
     val calls: Int,
-    val probes: Int
+    val probes: Int,
+    val stateEvidence: List<StateTimelineEvidenceEntry>
 )
 
 private interface FrameProvider : AutoCloseable {
@@ -5237,7 +5479,7 @@ data class ScanMetrics(
 ) {
     companion object {
         fun empty(): ScanMetrics = ScanMetrics(
-            scannerVersion = "v2-hybrid-interval-edge-ocr",
+            scannerVersion = "v3-stable-state-topology-ocr",
             wallClockMs = 0L,
             baselineSamplesEstimate = 0,
             visualSamples = 0,

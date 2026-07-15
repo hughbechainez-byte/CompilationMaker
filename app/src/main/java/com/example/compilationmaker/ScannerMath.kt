@@ -10,7 +10,16 @@ data class StableStateVote(
     /** Actual decoded-frame time, retained even when the requested seek is not exact. */
     val decodedTimestampMs: Long? = null,
     /** OCR/decode disposition retained as evidence rather than being collapsed into null. */
-    val status: String = if (value == null) "NO_TRANSITION" else "CONFIRMED_TRANSITION"
+    val status: String = if (value == null) "NO_TRANSITION" else "CONFIRMED_TRANSITION",
+    val mlKitValue: Int? = value,
+    val mlKitConfidence: Float? = null,
+    val rawText: String = "",
+    val preprocessingBranch: String = "",
+    val mlKitStructure: MlKitRecognitionEvidence? = null,
+    val topology: GlyphTopologyEvidence? = null,
+    val cropMs: Long = 0L,
+    val preprocessMs: Long = 0L,
+    val ocrMs: Long = 0L
 )
 
 data class StableNumberState(
@@ -134,7 +143,9 @@ fun classifyStableNumberState(votes: List<StableStateVote>): StableNumberState {
     val winner = grouped.maxByOrNull { it.value }
     val competingVotes = grouped.filterKeys { it != winner?.key }.values.maxOrNull() ?: 0
     val stableNumber = winner?.takeIf { it.value >= 3 && competingVotes < 2 }?.key
-    val validNullVotes = votes.count { it.value == null && it.status == "NO_TRANSITION" }
+    val validNullVotes = votes.count {
+        it.value == null && (it.status == "NO_TRANSITION" || it.status == "NO_TEXT")
+    }
     val stableNull = stableNumber == null && validNullVotes >= 3 && grouped.values.none { it >= 2 }
     return StableNumberState(
         value = stableNumber,

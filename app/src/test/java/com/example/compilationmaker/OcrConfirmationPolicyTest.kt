@@ -143,6 +143,60 @@ class OcrConfirmationPolicyTest {
     }
 
     @Test
+    fun ambiguousTopologyCannotBecomeStableNullButNoTextCan() {
+        val ambiguous = classifyStableNumberState(
+            listOf(
+                StableStateVote(0L, null, 0L, "AMBIGUOUS_TOPOLOGY", mlKitValue = 6),
+                StableStateVote(500L, null, 500L, "AMBIGUOUS_TOPOLOGY", mlKitValue = 9),
+                StableStateVote(1_000L, null, 1_000L, "AMBIGUOUS_TOPOLOGY", mlKitValue = 6),
+                StableStateVote(1_500L, null, 1_500L, "NO_TEXT"),
+                StableStateVote(2_000L, null, 2_000L, "NO_TEXT")
+            )
+        )
+        val stableNull = classifyStableNumberState(
+            listOf(
+                StableStateVote(0L, null, 0L, "NO_TEXT"),
+                StableStateVote(500L, null, 500L, "NO_TEXT"),
+                StableStateVote(1_000L, null, 1_000L, "NO_TEXT"),
+                StableStateVote(1_500L, null, 1_500L, "AMBIGUOUS_TOPOLOGY", mlKitValue = 6),
+                StableStateVote(2_000L, null, 2_000L, "OCR_TIMEOUT")
+            )
+        )
+        assertFalse(ambiguous.stable)
+        assertTrue(stableNull.stable)
+        assertEquals(null, stableNull.value)
+    }
+
+    @Test
+    fun adjudicatedSixVotesStabilizeWithoutLosingRawMlKitOrDecodedTime() {
+        val topology = GlyphTopologyEvidence(
+            decision = SixNineDecision.SIX,
+            thresholdMethod = "otsu+average",
+            thresholdValue = 100,
+            polarity = "bright-foreground",
+            componentArea = 200,
+            componentBounds = RectLike(2, 2, 18, 30),
+            holeCount = 1,
+            dominantHoleArea = 30,
+            dominantHoleCentroidYNormalized = 0.68f,
+            confidence = 0.94f,
+            reason = "test"
+        )
+        val votes = listOf(
+            StableStateVote(0L, 6, 11L, mlKitValue = 9, topology = topology),
+            StableStateVote(500L, 6, 511L, mlKitValue = 6, topology = topology),
+            StableStateVote(1_000L, 6, 1_011L, mlKitValue = 9, topology = topology),
+            StableStateVote(1_500L, null, 1_511L, "AMBIGUOUS_TOPOLOGY", mlKitValue = 9),
+            StableStateVote(2_000L, null, 2_011L, "NO_TEXT")
+        )
+        val state = classifyStableNumberState(votes)
+        assertTrue(state.stable)
+        assertEquals(6, state.value)
+        assertEquals(listOf(9, 6, 9), state.votes.take(3).map { it.mlKitValue })
+        assertEquals(1_011L, state.votes[2].decodedTimestampMs)
+    }
+
+    @Test
     fun semanticPolicyRejectsUnknownOrBackwardsTransitions() {
         assertFalse(classifyTransition(null, 6).sequential)
         assertFalse(classifyTransition(9, 6).sequential)
