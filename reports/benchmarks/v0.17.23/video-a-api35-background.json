@@ -1,0 +1,406 @@
+{
+  "schemaVersion": 1,
+  "applicationVersion": "0.17.23",
+  "commitSha": "4b1701a2213b5f503322fb6afba695532a82f3f9",
+  "branch": "master",
+  "fixtureId": "video-a-real-01",
+  "runId": "v0.17.23-api35-background",
+  "recordedAtUtc": "2026-07-15T07:16:17.982898+00:00",
+  "deviceModel": "sdk_gphone64_x86_64",
+  "androidApiLevel": 35,
+  "scannerVersion": "v2-hybrid-interval-edge-ocr",
+  "scanProfile": "StableCheckpoint",
+  "frameProvider": "MediaCodecFrameProvider",
+  "frameProviderFallbackReason": null,
+  "sourceVideoDurationMs": 3600500,
+  "expectedTransitions": [
+    {
+      "from": null,
+      "to": 1,
+      "eventBoundaryMs": 30000,
+      "toleranceMs": 1000
+    },
+    {
+      "from": 1,
+      "to": 2,
+      "eventBoundaryMs": 75000,
+      "toleranceMs": 1000
+    },
+    {
+      "from": 2,
+      "to": 3,
+      "eventBoundaryMs": 255000,
+      "toleranceMs": 1000
+    },
+    {
+      "from": 3,
+      "to": 4,
+      "eventBoundaryMs": 855000,
+      "toleranceMs": 1000
+    },
+    {
+      "from": 4,
+      "to": 5,
+      "eventBoundaryMs": 975000,
+      "toleranceMs": 1000
+    },
+    {
+      "from": 5,
+      "to": 6,
+      "eventBoundaryMs": 1275000,
+      "toleranceMs": 1000
+    },
+    {
+      "from": 6,
+      "to": 7,
+      "eventBoundaryMs": 1395000,
+      "toleranceMs": 1000
+    },
+    {
+      "from": 7,
+      "to": 8,
+      "eventBoundaryMs": 1995000,
+      "toleranceMs": 1000
+    },
+    {
+      "from": 8,
+      "to": 9,
+      "eventBoundaryMs": 2415000,
+      "toleranceMs": 1000
+    },
+    {
+      "from": 9,
+      "to": 10,
+      "eventBoundaryMs": 3560000,
+      "toleranceMs": 1000
+    }
+  ],
+  "detectedTransitions": [
+    {
+      "eventBoundaryMs": 29765,
+      "toNumber": 1,
+      "confidence": 0.7,
+      "requestedCutStartMs": 19765,
+      "requestedCutEndMs": 59765,
+      "candidateReason": "VisualChange",
+      "candidatePeakScore": 500.36127,
+      "evidence": [
+        "Visual pass reason=VisualChange",
+        "Detected first overlay 1",
+        "Semantic transition null -> 1"
+      ]
+    },
+    {
+      "eventBoundaryMs": 74765,
+      "fromNumber": 1,
+      "toNumber": 2,
+      "confidence": 1,
+      "requestedCutStartMs": 64765,
+      "requestedCutEndMs": 104765,
+      "candidateReason": "VisualChange",
+      "candidatePeakScore": 247.32292,
+      "evidence": [
+        "Visual pass reason=VisualChange",
+        "Refined transition between OCR values",
+        "Semantic transition 1 -> 2"
+      ]
+    },
+    {
+      "eventBoundaryMs": 254765,
+      "fromNumber": 2,
+      "toNumber": 3,
+      "confidence": 1,
+      "requestedCutStartMs": 244765,
+      "requestedCutEndMs": 284765,
+      "candidateReason": "VisualChange",
+      "candidatePeakScore": 59.74547,
+      "evidence": [
+        "Visual pass reason=VisualChange",
+        "Refined transition between OCR values",
+        "Semantic transition 2 -> 3"
+      ]
+    },
+    {
+      "eventBoundaryMs": 854765,
+      "fromNumber": 3,
+      "toNumber": 4,
+      "confidence": 1,
+      "requestedCutStartMs": 844765,
+      "requestedCutEndMs": 884765,
+      "candidateReason": "VisualChange",
+      "candidatePeakScore": 66.7384,
+      "evidence": [
+        "Visual pass reason=VisualChange",
+        "Refined transition between OCR values",
+        "Semantic transition 3 -> 4"
+      ]
+    },
+    {
+      "eventBoundaryMs": 974765,
+      "fromNumber": 4,
+      "toNumber": 5,
+      "confidence": 1,
+      "requestedCutStartMs": 964765,
+      "requestedCutEndMs": 1004765,
+      "candidateReason": "VisualChange",
+      "candidatePeakScore": 30.868382,
+      "evidence": [
+        "Visual pass reason=VisualChange",
+        "Refined transition between OCR values",
+        "Semantic transition 4 -> 5"
+      ]
+    },
+    {
+      "eventBoundaryMs": 1274765,
+      "fromNumber": 5,
+      "toNumber": 6,
+      "confidence": 1,
+      "requestedCutStartMs": 1264765,
+      "requestedCutEndMs": 1304765,
+      "candidateReason": "VisualChange",
+      "candidatePeakScore": 127.859314,
+      "evidence": [
+        "Visual pass reason=VisualChange",
+        "Refined transition between OCR values",
+        "Semantic transition 5 -> 6"
+      ]
+    },
+    {
+      "eventBoundaryMs": 1994765,
+      "fromNumber": 7,
+      "toNumber": 8,
+      "confidence": 1,
+      "requestedCutStartMs": 1984765,
+      "requestedCutEndMs": 2024765,
+      "candidateReason": "VisualChange",
+      "candidatePeakScore": 332.85175,
+      "evidence": [
+        "Visual pass reason=VisualChange",
+        "Refined transition between OCR values",
+        "Semantic transition 7 -> 8"
+      ]
+    }
+  ],
+  "matches": [
+    {
+      "expected": {
+        "from": null,
+        "to": 1,
+        "eventBoundaryMs": 30000,
+        "toleranceMs": 1000
+      },
+      "detected": {
+        "eventBoundaryMs": 29765,
+        "toNumber": 1,
+        "confidence": 0.7,
+        "requestedCutStartMs": 19765,
+        "requestedCutEndMs": 59765,
+        "candidateReason": "VisualChange",
+        "candidatePeakScore": 500.36127,
+        "evidence": [
+          "Visual pass reason=VisualChange",
+          "Detected first overlay 1",
+          "Semantic transition null -> 1"
+        ]
+      },
+      "eventBoundaryErrorMs": -235
+    },
+    {
+      "expected": {
+        "from": 1,
+        "to": 2,
+        "eventBoundaryMs": 75000,
+        "toleranceMs": 1000
+      },
+      "detected": {
+        "eventBoundaryMs": 74765,
+        "fromNumber": 1,
+        "toNumber": 2,
+        "confidence": 1,
+        "requestedCutStartMs": 64765,
+        "requestedCutEndMs": 104765,
+        "candidateReason": "VisualChange",
+        "candidatePeakScore": 247.32292,
+        "evidence": [
+          "Visual pass reason=VisualChange",
+          "Refined transition between OCR values",
+          "Semantic transition 1 -> 2"
+        ]
+      },
+      "eventBoundaryErrorMs": -235
+    },
+    {
+      "expected": {
+        "from": 2,
+        "to": 3,
+        "eventBoundaryMs": 255000,
+        "toleranceMs": 1000
+      },
+      "detected": {
+        "eventBoundaryMs": 254765,
+        "fromNumber": 2,
+        "toNumber": 3,
+        "confidence": 1,
+        "requestedCutStartMs": 244765,
+        "requestedCutEndMs": 284765,
+        "candidateReason": "VisualChange",
+        "candidatePeakScore": 59.74547,
+        "evidence": [
+          "Visual pass reason=VisualChange",
+          "Refined transition between OCR values",
+          "Semantic transition 2 -> 3"
+        ]
+      },
+      "eventBoundaryErrorMs": -235
+    },
+    {
+      "expected": {
+        "from": 3,
+        "to": 4,
+        "eventBoundaryMs": 855000,
+        "toleranceMs": 1000
+      },
+      "detected": {
+        "eventBoundaryMs": 854765,
+        "fromNumber": 3,
+        "toNumber": 4,
+        "confidence": 1,
+        "requestedCutStartMs": 844765,
+        "requestedCutEndMs": 884765,
+        "candidateReason": "VisualChange",
+        "candidatePeakScore": 66.7384,
+        "evidence": [
+          "Visual pass reason=VisualChange",
+          "Refined transition between OCR values",
+          "Semantic transition 3 -> 4"
+        ]
+      },
+      "eventBoundaryErrorMs": -235
+    },
+    {
+      "expected": {
+        "from": 4,
+        "to": 5,
+        "eventBoundaryMs": 975000,
+        "toleranceMs": 1000
+      },
+      "detected": {
+        "eventBoundaryMs": 974765,
+        "fromNumber": 4,
+        "toNumber": 5,
+        "confidence": 1,
+        "requestedCutStartMs": 964765,
+        "requestedCutEndMs": 1004765,
+        "candidateReason": "VisualChange",
+        "candidatePeakScore": 30.868382,
+        "evidence": [
+          "Visual pass reason=VisualChange",
+          "Refined transition between OCR values",
+          "Semantic transition 4 -> 5"
+        ]
+      },
+      "eventBoundaryErrorMs": -235
+    },
+    {
+      "expected": {
+        "from": 5,
+        "to": 6,
+        "eventBoundaryMs": 1275000,
+        "toleranceMs": 1000
+      },
+      "detected": {
+        "eventBoundaryMs": 1274765,
+        "fromNumber": 5,
+        "toNumber": 6,
+        "confidence": 1,
+        "requestedCutStartMs": 1264765,
+        "requestedCutEndMs": 1304765,
+        "candidateReason": "VisualChange",
+        "candidatePeakScore": 127.859314,
+        "evidence": [
+          "Visual pass reason=VisualChange",
+          "Refined transition between OCR values",
+          "Semantic transition 5 -> 6"
+        ]
+      },
+      "eventBoundaryErrorMs": -235
+    },
+    {
+      "expected": {
+        "from": 7,
+        "to": 8,
+        "eventBoundaryMs": 1995000,
+        "toleranceMs": 1000
+      },
+      "detected": {
+        "eventBoundaryMs": 1994765,
+        "fromNumber": 7,
+        "toNumber": 8,
+        "confidence": 1,
+        "requestedCutStartMs": 1984765,
+        "requestedCutEndMs": 2024765,
+        "candidateReason": "VisualChange",
+        "candidatePeakScore": 332.85175,
+        "evidence": [
+          "Visual pass reason=VisualChange",
+          "Refined transition between OCR values",
+          "Semantic transition 7 -> 8"
+        ]
+      },
+      "eventBoundaryErrorMs": -235
+    }
+  ],
+  "falseNegatives": [
+    {
+      "expected": {
+        "from": 6,
+        "to": 7,
+        "eventBoundaryMs": 1395000,
+        "toleranceMs": 1000
+      },
+      "candidateCoverage": true,
+      "earliestFailureStage": "OCR_OR_SEQUENCE_REJECTION"
+    },
+    {
+      "expected": {
+        "from": 8,
+        "to": 9,
+        "eventBoundaryMs": 2415000,
+        "toleranceMs": 1000
+      },
+      "candidateCoverage": true,
+      "earliestFailureStage": "OCR_OR_SEQUENCE_REJECTION"
+    },
+    {
+      "expected": {
+        "from": 9,
+        "to": 10,
+        "eventBoundaryMs": 3560000,
+        "toleranceMs": 1000
+      },
+      "candidateCoverage": true,
+      "earliestFailureStage": "OCR_OR_SEQUENCE_REJECTION"
+    }
+  ],
+  "falsePositives": [],
+  "truePositives": 7,
+  "precision": 1.0,
+  "recall": 0.7,
+  "candidateCount": 22,
+  "acceptedTransitionCount": 7,
+  "rejectedCandidateCount": 0,
+  "candidateTimeoutCount": 0,
+  "unresolvedIntervalCount": 3,
+  "visualSampleCount": 61,
+  "ocrCallCount": 625,
+  "providerFallbackCount": 0,
+  "scanWallClockMs": 416463,
+  "videoDurationToWallTimeMultiple": 8.645426,
+  "outputDurationMs": 330601,
+  "outputSizeBytes": 3144919,
+  "outputVerificationResult": false,
+  "apkSha256": "24C07854FB337F1042B683FA4BD5A6EF99C65C8817026A841B7C91BFE9DFD197",
+  "testApkSha256": "0600DFC65A35396A1E5DD6FD773BE95EE59F451660973519CCE8451FE9F3278D",
+  "fallbackUsed": false,
+  "result": "FAIL"
+}

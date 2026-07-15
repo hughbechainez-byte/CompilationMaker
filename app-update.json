@@ -1,11 +1,23 @@
 {
-  "version": "v0.17.21",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.21",
+  "version": "v0.17.23",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.23",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.21/CompilationMaker-v0.17.21.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.23/CompilationMaker-v0.17.23.apk"
   },
-  "notes": "Test build: caps production semantic interval recursion at three stable-state probes while retaining deep deterministic recursion coverage. Phase 1 fixture validation remains in progress.",
+  "notes": "Test build: replaces the background-sensitive fixed candidate timeout with a bounded OCR-work-scaled guard. Exact API 35 background QA reached 70% transition recall with zero candidate timeouts; topology work remains in progress.",
   "updates": [
+    {
+      "version": "v0.17.23",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.23",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.23/CompilationMaker-v0.17.23.apk",
+      "notes": "Test build: replaces the background-sensitive fixed candidate timeout with a bounded OCR-work-scaled guard. Exact API 35 background QA reached 70% transition recall with zero candidate timeouts; topology work remains in progress."
+    },
+    {
+      "version": "v0.17.22",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.22",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.22/CompilationMaker-v0.17.22.apk",
+      "notes": "Test build: added bounded first-state refinement and Activity-closed QA coverage. Retained for rollback; fixed candidate deadlines caused a background semantic regression."
+    },
     {
       "version": "v0.17.21",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.21",
