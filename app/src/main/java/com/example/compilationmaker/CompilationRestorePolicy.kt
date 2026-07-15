@@ -81,14 +81,33 @@ internal fun reconcileCompilationRestore(
         retainPersistedRecord = true
     )
 
+    fun successfulState(): CompilationPipelineState =
+        if (persisted.previewClassification == CompilationPreviewClassification.PROVISIONAL ||
+            persisted.state == CompilationPipelineState.PROVISIONAL_SUCCEEDED
+        ) {
+            CompilationPipelineState.PROVISIONAL_SUCCEEDED
+        } else {
+            CompilationPipelineState.SUCCEEDED
+        }
+
+    fun successfulMessage(): String =
+        if (successfulState() == CompilationPipelineState.PROVISIONAL_SUCCEEDED) {
+            "Provisional preview ready"
+        } else {
+            "Compilation complete"
+        }
+
     if (observed == null) {
-        if (persisted.state == CompilationPipelineState.SUCCEEDED &&
+        if (persisted.state in setOf(
+                CompilationPipelineState.SUCCEEDED,
+                CompilationPipelineState.PROVISIONAL_SUCCEEDED
+            ) &&
             outputVerificationFailure(persistedOutput) == null
         ) {
             return decision(
                 screen = CompilationRestoreScreen.SUCCEEDED,
-                state = CompilationPipelineState.SUCCEEDED,
-                message = "Compilation complete",
+                state = successfulState(),
+                message = successfulMessage(),
                 workId = null,
                 output = persistedOutput
             )
@@ -146,8 +165,8 @@ internal fun reconcileCompilationRestore(
             if (outputFailure == null) {
                 decision(
                     CompilationRestoreScreen.SUCCEEDED,
-                    CompilationPipelineState.SUCCEEDED,
-                    "Compilation complete",
+                    successfulState(),
+                    successfulMessage(),
                     workId = null,
                     output = output
                 )

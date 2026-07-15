@@ -33,6 +33,21 @@ class CompilationTerminalPolicyTest {
     }
 
     @Test
+    fun verifiedFallbackOutputHasDedicatedProvisionalSuccessOutcome() {
+        val decision = decidePipelineTerminalOutcome(
+            candidateCount = 19,
+            clipCount = 10,
+            output = validOutput,
+            provisional = true
+        )
+
+        assertEquals(PipelineTerminalKind.PROVISIONAL_SUCCESS, decision.kind)
+        assertEquals(PipelineTerminalStage.VERIFYING, decision.stage)
+        assertEquals("Provisional preview ready", decision.message)
+        assertEquals(validOutput.uri, decision.outputUri)
+    }
+
+    @Test
     fun scanBudgetReachedWithZeroCandidatesReturnsTypedNoResults() {
         val decision = decidePipelineTerminalOutcome(
             candidateCount = 0,

@@ -35,6 +35,59 @@ class OcrConfirmationPolicyTest {
     }
 
     @Test
+    fun thirtyNineSecondCandidateIsNotMisreportedAsExpiredAfterThreeSeconds() {
+        var nowMs = 10_000L
+        val tracker = ConfirmationDeadlineTracker(
+            globalStartMs = 10_000L,
+            globalBudgetMs = 120_000L,
+            localStartMs = 10_000L,
+            localBudgetMs = 39_000L,
+            clock = MonotonicTimeSource { nowMs }
+        )
+
+        nowMs += 3_000L
+        val innerTimeoutSnapshot = tracker.snapshot()
+        assertFalse(innerTimeoutSnapshot.localExpired)
+        assertEquals(36_000L, innerTimeoutSnapshot.localDeadlineMs - nowMs)
+        assertEquals("nested_timeout_propagated", propagatedConfirmationTimeoutSource(innerTimeoutSnapshot))
+
+        nowMs = innerTimeoutSnapshot.localDeadlineMs
+        val candidateTimeoutSnapshot = tracker.snapshot()
+        assertTrue(candidateTimeoutSnapshot.localExpired)
+        assertEquals("candidate_local", propagatedConfirmationTimeoutSource(candidateTimeoutSnapshot))
+    }
+
+    @Test
+    fun confirmationBudgetsUseMonotonicRemainingTimeAndFreshCandidateStarts() {
+        var nowMs = 1_000L
+        val first = ConfirmationDeadlineTracker(
+            globalStartMs = 1_000L,
+            globalBudgetMs = 100_000L,
+            localStartMs = 1_000L,
+            localBudgetMs = 39_000L,
+            clock = MonotonicTimeSource { nowMs }
+        )
+        val remaining = mutableListOf<Long>()
+        listOf(1_000L, 4_000L, 15_000L, 39_999L).forEach { sample ->
+            nowMs = sample
+            remaining += first.snapshot().remainingGlobalMs
+        }
+        assertTrue(remaining.zipWithNext().all { (before, after) -> after <= before })
+
+        nowMs = 45_000L
+        val second = ConfirmationDeadlineTracker(
+            globalStartMs = 1_000L,
+            globalBudgetMs = 100_000L,
+            localStartMs = nowMs,
+            localBudgetMs = 39_000L,
+            clock = MonotonicTimeSource { nowMs }
+        )
+        nowMs += 3_000L
+        assertEquals(3_000L, second.snapshot().elapsedLocalMs)
+        assertFalse(second.snapshot().localExpired)
+    }
+
+    @Test
     fun laterCandidateTimeoutCannotEraseEarlierConfirmations() {
         val ledger = IncrementalTransitionLedger(dedupeMs = 900L)
         ledger.confirm(10_000L)

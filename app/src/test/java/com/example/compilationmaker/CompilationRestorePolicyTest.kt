@@ -22,7 +22,10 @@ class CompilationRestorePolicyTest {
 
     private fun record(
         state: CompilationPipelineState = CompilationPipelineState.COARSE_SCAN
-    ) = CompilationJobRecord(
+    ): CompilationJobRecord {
+        val successful = state == CompilationPipelineState.SUCCEEDED ||
+            state == CompilationPipelineState.PROVISIONAL_SUCCEEDED
+        return CompilationJobRecord(
         workId = workId,
         uniqueWorkName = CompilationJobContract.UNIQUE_WORK_NAME,
         sourceUri = "content://videos/source.mp4",
@@ -33,12 +36,20 @@ class CompilationRestorePolicyTest {
         progressMessage = "Scanning timeline",
         createdAtMs = 1_000L,
         updatedAtMs = 2_000L,
-        outputUri = if (state == CompilationPipelineState.SUCCEEDED) validOutput.uri.orEmpty() else "",
-        outputPath = if (state == CompilationPipelineState.SUCCEEDED) "/cache/restored.mp4" else "",
-        outputSizeBytes = if (state == CompilationPipelineState.SUCCEEDED) validOutput.sizeBytes else 0L,
-        outputDurationMs = if (state == CompilationPipelineState.SUCCEEDED) validOutput.durationMs else 0L,
-        previewAvailable = state == CompilationPipelineState.SUCCEEDED
+        outputUri = if (successful) validOutput.uri.orEmpty() else "",
+        outputPath = if (successful) "/cache/restored.mp4" else "",
+        outputSizeBytes = if (successful) validOutput.sizeBytes else 0L,
+        outputDurationMs = if (successful) validOutput.durationMs else 0L,
+        previewAvailable = successful,
+        previewClassification = if (state == CompilationPipelineState.PROVISIONAL_SUCCEEDED) {
+            CompilationPreviewClassification.PROVISIONAL
+        } else if (successful) {
+            CompilationPreviewClassification.CONFIRMED
+        } else {
+            CompilationPreviewClassification.NONE
+        }
     )
+    }
 
     @Test
     fun activityDestroyedAndRecreatedDuringScanReconnectsToTheSameUuid() {
@@ -90,6 +101,19 @@ class CompilationRestorePolicyTest {
         assertEquals(validOutput.uri, decision.outputUri)
         assertEquals(validOutput.sizeBytes, decision.outputSizeBytes)
         assertEquals(validOutput.durationMs, decision.outputDurationMs)
+    }
+
+    @Test
+    fun provisionalPreviewSurvivesRecreationWithoutBecomingConfirmed() {
+        val decision = reconcileCompilationRestore(
+            persisted = record(CompilationPipelineState.PROVISIONAL_SUCCEEDED),
+            observed = RestoredWorkSnapshot(workId, RestoredWorkState.SUCCEEDED, validOutput)
+        )
+
+        assertEquals(CompilationRestoreScreen.SUCCEEDED, decision.screen)
+        assertEquals(CompilationPipelineState.PROVISIONAL_SUCCEEDED, decision.pipelineState)
+        assertEquals("Provisional preview ready", decision.message)
+        assertEquals(validOutput.uri, decision.outputUri)
     }
 
     @Test

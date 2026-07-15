@@ -1,7 +1,7 @@
 # Compilation Maker Technical Implementation Specification
 
 Status: approved implementation plan; Phase 1 is not yet complete
-Last updated: 2026-07-12
+Last updated: 2026-07-14
 Primary fixture: `compilation test video A.mp4`
 Reference fixture: `compilation test video B.mp4`
 
@@ -88,7 +88,10 @@ Rules:
 
 - Do not start Phase 2 while Phase 1 is red.
 - Within Phase 1, fix the earliest causal failure in the current QA report before later failures.
-- Preserve working WorkManager identity, unique-work `KEEP`, foreground execution, cancellation, ROI persistence, lifecycle restoration, and finalization logging during extraction.
+- Preserve the stable WorkManager identity and `KEEP` only for an active UUID that matches the
+  durable active job. An explicit new request MUST replace orphaned/stale active unique work rather
+  than attach to unknown metadata. Preserve foreground execution, cancellation, ROI persistence,
+  lifecycle restoration, and finalization logging during extraction.
 - Refactoring MUST be behavior-preserving unless the increment explicitly changes that behavior.
 - Every behavior change MUST add a regression test in the same patch.
 
@@ -303,6 +306,7 @@ data class ClipPlan(
 
 enum class CompilationOutcome {
     SUCCEEDED,
+    PROVISIONAL_SUCCEEDED,
     NO_RESULTS,
     FAILED,
     CANCELLED
@@ -312,11 +316,16 @@ enum class CompilationOutcome {
 Terminal rules:
 
 - `SUCCEEDED`: export and all in-app verification checks passed.
-- `NO_RESULTS`: scan completed without any confirmed transition. This is not a crash and MUST show a specific user message.
+- `PROVISIONAL_SUCCEEDED`: a verified playable output was created from one or more explicitly
+  provisional transition marks. This is a successful user preview, but `fallbackUsed=true` and it
+  MUST NOT satisfy the confirmed-only primary-fixture gate.
+- `NO_RESULTS`: scan completed without any credible confirmed or provisional transition. This is not a crash and MUST show a specific user message.
 - `FAILED`: a non-cancellation failure prevented a valid output.
 - `CANCELLED`: user, WorkManager, or system cancellation was observed. Partial output MUST be deleted.
 - OCR failure for one candidate MUST NOT fail the whole scan. It records a candidate result and scanning continues.
 - A fallback scanner MUST set `fallbackUsed=true`; such a run cannot pass fixture QA.
+- `NO_RESULTS` is valid only when no credible confirmed or provisional transition evidence remains.
+  Candidate-local frame/OCR timeouts retain partial evidence and cannot silently erase the clip plan.
 
 ## 8. Transition scanner specification
 
@@ -580,21 +589,29 @@ Planner rules:
 - A merged clip MUST retain the IDs of all transitions it contains.
 - For the primary fixture, no merge is expected: ten marks MUST produce ten 40,000 ms clips.
 - Store the unmerged and merged plans in `QaRunReport`.
+- Confirmed marks have priority. High-confidence provisional marks MAY supplement confirmed marks;
+  when no confirmed marks exist, credible visual-opened high/medium marks MUST produce a labeled
+  provisional plan rather than an empty result. Persist the classification and rejection reason for
+  every selected or discarded mark. Any provisional mark makes primary confirmed-only QA ineligible.
 
 ## 11. Export specification
 
 ### 11.1 Dependency
 
-Pin all Media3 artifacts to `1.10.1`:
+Pin all Media3 artifacts used by the current compile-SDK-35 build to `1.9.3`:
 
 ```kotlin
-implementation("androidx.media3:media3-transformer:1.10.1")
-implementation("androidx.media3:media3-common:1.10.1")
-implementation("androidx.media3:media3-exoplayer:1.10.1")
-implementation("androidx.media3:media3-ui:1.10.1")
+implementation("androidx.media3:media3-transformer:1.9.3")
+implementation("androidx.media3:media3-common:1.9.3")
+implementation("androidx.media3:media3-exoplayer:1.9.3")
+implementation("androidx.media3:media3-ui:1.9.3")
 ```
 
 Do not use dynamic versions.
+
+Media3 `1.10.1` declares `minCompileSdk=36` and is therefore incompatible with this plan's pinned
+`compileSdk=35`; `1.9.3` is the newest compatible line verified by the build. Upgrade both together
+only when the approved toolchain moves to API 36.
 
 ### 11.2 Composition
 
@@ -634,15 +651,19 @@ BUILDING_CLIP_PLAN
 EXPORTING
 VERIFYING
 FINALIZING
-SUCCEEDED | NO_RESULTS | FAILED | CANCELLED
+SUCCEEDED | PROVISIONAL_SUCCEEDED | NO_RESULTS | FAILED | CANCELLED
 ```
 
 Requirements:
 
-- Enqueue unique work using the existing stable unique-work name and `ExistingWorkPolicy.KEEP`.
+- Enqueue under the existing stable unique-work name. Use `ExistingWorkPolicy.KEEP` only when the
+  durable active UUID matches WorkManager; use `REPLACE` for orphaned active history after logging
+  the mismatch. Terminal history MUST allow a genuinely new request.
 - Persist the WorkManager UUID immediately after enqueue.
 - `CompilationJobStore` is the durable source of job state. Add `schemaVersion` and migration-safe defaults.
 - Persist source URI, URI permission state, ROI, scanner profile, current stage, percent, message, candidate count, confirmed count, clip count, output URI/path, report path, timestamps, and terminal error.
+- Persist provisional count/classification, complete clip-plan JSON, scan-report path, completed
+  checkpoint/probe/semantic-leaf counts, fallback reason, and last successful stage before export.
 - On app start, reconcile persisted state with WorkManager before rendering.
 - Do not infer success from a missing WorkInfo record; validate the output and persisted terminal state.
 - Do not enqueue duplicate work after Activity recreation.
@@ -773,8 +794,7 @@ Create these platform-neutral host tools:
 
 ```text
 tools/android-qa/validate_qa_report.py
-tools/android-qa/compare_video.py
-tools/android-qa/compare_audio.py
+tools/android-qa/compare_media.py
 tools/android-qa/check_fixture_leaks.py
 tools/fixtures/generate_fixture.py
 ```

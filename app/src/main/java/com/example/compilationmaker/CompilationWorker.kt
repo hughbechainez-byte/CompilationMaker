@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.system.Os
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
@@ -17,6 +18,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.isActive
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
@@ -126,14 +128,36 @@ class CompilationWorker(
                 throw scanResult.failure ?: IllegalStateException(scanResult.failureReason ?: "Scan failed")
             }
 
-            if (scanResult.visualFallbackUsed) {
+            val provisionalPreview =
+                scanResult.previewClassification == CompilationPreviewClassification.PROVISIONAL
+            if (scanResult.visualFallbackUsed || provisionalPreview) {
                 fallbackUsed = true
-                failureReason = "OCR confirmed no transitions; exported high-confidence visual fallback clips"
+                val provisionalReason =
+                    "Provisional preview uses ${scanResult.provisionalTransitionCount} non-confirmed transition(s) " +
+                        "with ${scanResult.confirmedTransitionCount} strict confirmation(s); confirmed-only fixture QA is ineligible"
+                failureReason = listOfNotNull(failureReason?.takeIf { it.isNotBlank() }, provisionalReason)
+                    .joinToString("; ")
             }
 
             val reportPath = scanResult.reportPath
             jobStore.update(workId) { record ->
-                record.copy(candidateCount = scanResult.candidateCount, clipCount = scanResult.segments.size)
+                record.copy(
+                    candidateCount = scanResult.candidateCount,
+                    clipCount = scanResult.segments.size,
+                    sourceDurationMs = scanResult.durationMs,
+                    completedCheckpointCount = scanResult.completedCheckpointCount,
+                    recursiveProbeCount = scanResult.recursiveProbeCount,
+                    semanticLeafCount = scanResult.semanticLeafCount,
+                    confirmedTransitionCount = scanResult.confirmedTransitionCount,
+                    provisionalTransitionCount = scanResult.provisionalTransitionCount,
+                    rejectedTransitionCount = scanResult.rejectedTransitionCount,
+                    scanReportPath = reportPath.orEmpty(),
+                    clipPlanJson = encodeClipPlan(scanResult),
+                    previewClassification = scanResult.previewClassification,
+                    fallbackUsed = fallbackUsed,
+                    fallbackReason = failureReason.orEmpty(),
+                    lastSuccessfulStage = "clip plan"
+                )
             }
 
             val windows = scanResult.segments
@@ -217,20 +241,33 @@ class CompilationWorker(
             val decision = decidePipelineTerminalOutcome(
                 candidateCount = scanResult.candidateCount,
                 clipCount = windows.size,
-                output = evidence
+                output = evidence,
+                provisional = provisionalPreview
             )
-            check(decision.kind == PipelineTerminalKind.SUCCESS) { decision.message }
+            check(decision.kind == PipelineTerminalKind.SUCCESS ||
+                decision.kind == PipelineTerminalKind.PROVISIONAL_SUCCESS
+            ) { decision.message }
 
             reportPath?.let { augmentReport(it, fallbackUsed, failureReason) }
 
             val finalReportPath = reportPath
             val failure = if (fallbackUsed) failureReason else null
+            val terminalState = if (provisionalPreview) {
+                CompilationPipelineState.PROVISIONAL_SUCCEEDED
+            } else {
+                CompilationPipelineState.SUCCEEDED
+            }
+            val terminalPhase = if (provisionalPreview) "provisional_completed" else "completed"
+            val completionMessage = decision.message
             val result = workDataOf(
                 KEY_OUTPUT_PATH to verifiedOutput.file.absolutePath,
                 CompilationJobContract.KEY_OUTPUT_URI to verifiedOutput.uri,
                 CompilationJobContract.KEY_OUTPUT_SIZE_BYTES to verifiedOutput.sizeBytes,
                 CompilationJobContract.KEY_OUTPUT_DURATION_MS to verifiedOutput.durationMs,
-                CompilationJobContract.KEY_PIPELINE_STATE to CompilationPipelineState.SUCCEEDED.name,
+                CompilationJobContract.KEY_PIPELINE_STATE to terminalState.name,
+                CompilationJobContract.KEY_PREVIEW_CLASSIFICATION to scanResult.previewClassification.name,
+                CompilationJobContract.KEY_CONFIRMED_TRANSITION_COUNT to scanResult.confirmedTransitionCount,
+                CompilationJobContract.KEY_PROVISIONAL_TRANSITION_COUNT to scanResult.provisionalTransitionCount,
                 KEY_FORMAT_ORDINAL to format.ordinal,
                 KEY_REPORT_PATH to finalReportPath.orEmpty(),
                 KEY_FALLBACK_USED to fallbackUsed,
@@ -238,10 +275,10 @@ class CompilationWorker(
             )
             jobStore.update(workId) { record ->
                 record.copy(
-                    state = CompilationPipelineState.SUCCEEDED,
-                    stage = "succeeded",
+                    state = terminalState,
+                    stage = if (provisionalPreview) "provisional succeeded" else "succeeded",
                     progressPercent = 100,
-                    progressMessage = "Compilation complete",
+                    progressMessage = completionMessage,
                     completedAtMs = System.currentTimeMillis(),
                     outputUri = verifiedOutput.uri,
                     outputPath = verifiedOutput.file.absolutePath,
@@ -250,14 +287,23 @@ class CompilationWorker(
                     candidateCount = scanResult.candidateCount,
                     clipCount = windows.size,
                     previewAvailable = true,
+                    previewClassification = scanResult.previewClassification,
+                    fallbackUsed = fallbackUsed,
+                    fallbackReason = failureReason.orEmpty(),
+                    lastSuccessfulStage = "preview",
                     errorStage = "",
                     errorType = "",
                     errorMessage = ""
                 )
             }
-            setProgressCompat("completed", "Compilation complete", 100, fallbackUsed)
-            setForegroundCompat("completed", "Compilation complete", 100, fallbackUsed)
-            AppLog.i(applicationContext, "CompilationWorker", "[worker] returning success thread=${Thread.currentThread().name}")
+            setProgressCompat(terminalPhase, completionMessage, 100, fallbackUsed, terminalState)
+            setForegroundCompat(terminalPhase, completionMessage, 100, fallbackUsed, terminalState)
+            AppLog.i(
+                applicationContext,
+                "CompilationWorker",
+                "[worker] returning success terminalKind=${decision.kind.name} confirmed=${scanResult.confirmedTransitionCount} " +
+                    "provisional=${scanResult.provisionalTransitionCount} thread=${Thread.currentThread().name}"
+            )
             Result.success(result)
         } catch (cancelled: CancellationException) {
             outputForCleanup?.takeIf { it.exists() }?.let { partial ->
@@ -338,7 +384,14 @@ class CompilationWorker(
                 candidateCount = result.candidateCount,
                 candidateTimestampsMs = result.candidateTimestampsMs,
                 scanBudgetReached = result.scanBudgetReached,
-                visualFallbackUsed = result.visualFallbackUsed
+                visualFallbackUsed = result.visualFallbackUsed,
+                confirmedTransitionCount = result.confirmedTransitionCount,
+                provisionalTransitionCount = result.provisionalTransitionCount,
+                rejectedTransitionCount = result.rejectedTransitionCount,
+                completedCheckpointCount = result.completedCheckpointCount,
+                recursiveProbeCount = result.recursiveProbeCount,
+                semanticLeafCount = result.semanticLeafCount,
+                previewClassification = result.previewClassification
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -365,11 +418,35 @@ class CompilationWorker(
             if (failureReason != null) {
                 json.put("failureReason", failureReason)
             }
-            file.writeText(json.toString(2))
+            val temporary = File(file.parentFile, ".${file.name}.worker.tmp")
+            if (temporary.exists()) temporary.delete()
+            temporary.writeText(json.toString(2))
+            Os.rename(temporary.absolutePath, file.absolutePath)
         } catch (failure: Exception) {
             recordHandledWorkerFailure(applicationContext, "CompilationWorker", "Scan report update failed", failure)
         }
     }
+
+    private fun encodeClipPlan(result: ScanTaskResult): String = JSONObject().apply {
+        put("schemaVersion", 1)
+        put("classification", result.previewClassification.name)
+        put("confirmedTransitionCount", result.confirmedTransitionCount)
+        put("provisionalTransitionCount", result.provisionalTransitionCount)
+        put("rejectedTransitionCount", result.rejectedTransitionCount)
+        put("sourceDurationMs", result.durationMs)
+        put("candidateTimestampsMs", JSONArray().apply {
+            result.candidateTimestampsMs.forEach(::put)
+        })
+        put("segments", JSONArray().apply {
+            result.segments.forEach { segment ->
+                put(JSONObject().apply {
+                    put("startMs", segment.startMs)
+                    put("endMs", segment.endMs)
+                    put("durationMs", (segment.endMs - segment.startMs).coerceAtLeast(0L))
+                })
+            }
+        })
+    }.toString()
 
     private fun parseScanWindow(raw: String?): ScanWindow {
         if (raw.isNullOrBlank()) {
@@ -453,6 +530,7 @@ class CompilationWorker(
         CompilationPipelineState.CANCELLED -> "cancelled"
         CompilationPipelineState.FAILED -> "failed"
         CompilationPipelineState.SUCCEEDED -> "completed"
+        CompilationPipelineState.PROVISIONAL_SUCCEEDED -> "provisional_completed"
         CompilationPipelineState.QUEUED -> "queued"
         else -> "preparing"
     }
@@ -537,7 +615,14 @@ class CompilationWorker(
         val candidateCount: Int = 0,
         val candidateTimestampsMs: List<Long> = emptyList(),
         val scanBudgetReached: Boolean = false,
-        val visualFallbackUsed: Boolean = false
+        val visualFallbackUsed: Boolean = false,
+        val confirmedTransitionCount: Int = 0,
+        val provisionalTransitionCount: Int = 0,
+        val rejectedTransitionCount: Int = 0,
+        val completedCheckpointCount: Int = 0,
+        val recursiveProbeCount: Int = 0,
+        val semanticLeafCount: Int = 0,
+        val previewClassification: CompilationPreviewClassification = CompilationPreviewClassification.NONE
     )
 
     companion object {

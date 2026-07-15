@@ -48,6 +48,7 @@ class CompilationJobStorePolicyTest {
     fun terminalJobScreensAreRestoredInsteadOfBeingOverwrittenByRoi() {
         listOf(
             CompilationPipelineState.SUCCEEDED,
+            CompilationPipelineState.PROVISIONAL_SUCCEEDED,
             CompilationPipelineState.FAILED,
             CompilationPipelineState.CANCELLED,
             CompilationPipelineState.NO_RESULTS
@@ -77,6 +78,10 @@ class CompilationJobStorePolicyTest {
         assertEquals(CompilationPipelineState.BUILDING_CLIP_PLAN, pipelineStateForProgressPhase("clip plan"))
         assertEquals(CompilationPipelineState.EXPORTING, pipelineStateForProgressPhase("muxing final output"))
         assertEquals(CompilationPipelineState.VERIFYING, pipelineStateForProgressPhase("verify output"))
+        assertEquals(
+            CompilationPipelineState.PROVISIONAL_SUCCEEDED,
+            pipelineStateForProgressPhase("provisional_completed")
+        )
     }
 
     @Test
@@ -101,6 +106,20 @@ class CompilationJobStorePolicyTest {
             candidateCount = 12,
             clipCount = 5,
             previewAvailable = true,
+            sourcePermissionPersisted = true,
+            sourceDurationMs = 120_000L,
+            completedCheckpointCount = 21,
+            recursiveProbeCount = 31,
+            semanticLeafCount = 10,
+            confirmedTransitionCount = 0,
+            provisionalTransitionCount = 10,
+            rejectedTransitionCount = 9,
+            scanReportPath = "/files/scan-report.json",
+            clipPlanJson = "{\"segments\":[{\"startMs\":0,\"endMs\":40000}]}",
+            previewClassification = CompilationPreviewClassification.PROVISIONAL,
+            fallbackUsed = true,
+            fallbackReason = "strict confirmation timed out",
+            lastSuccessfulStage = "preview",
             settings = CompilationJobSettings(
                 scanWindowJson = "{\"xPercent\":0.1}",
                 scanModeOrdinal = 1,
@@ -124,5 +143,9 @@ class CompilationJobStorePolicyTest {
         assertEquals(12, restored?.candidateCount)
         assertEquals(5, restored?.clipCount)
         assertTrue(restored?.previewAvailable == true)
+        assertEquals(CompilationPreviewClassification.PROVISIONAL, restored?.previewClassification)
+        assertEquals(10, restored?.provisionalTransitionCount)
+        assertEquals(original.clipPlanJson, restored?.clipPlanJson)
+        assertEquals(original.scanReportPath, restored?.scanReportPath)
     }
 }

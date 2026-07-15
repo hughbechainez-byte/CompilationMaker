@@ -692,11 +692,24 @@ class MainActivity : AppCompatActivity() {
         transitionStyle: TransitionStyle
     ) {
         val previousRecord = compilationJobStore.load()
-        val existing = withContext(Dispatchers.IO) {
+        val uniqueWorkInfos = withContext(Dispatchers.IO) {
             workManager.getWorkInfosForUniqueWork(compilationWorkName).get()
-                .firstOrNull { isActiveWorkManagerState(it.state) }
         }
-        if (existing != null) {
+        val preflightDecision = decideUniqueCompilationEnqueue(
+            proposedWorkId = "pending-explicit-request",
+            persistedWorkId = previousRecord?.workId,
+            persistedWorkIsActive = previousRecord?.state?.isActive == true,
+            uniqueWork = uniqueWorkInfos.map { workInfo ->
+                UniqueCompilationWorkSnapshot(
+                    workId = workInfo.id.toString(),
+                    isActive = isActiveWorkManagerState(workInfo.state)
+                )
+            }
+        )
+        if (preflightDecision.action == CompilationEnqueueAction.ATTACH_EXISTING) {
+            val existing = uniqueWorkInfos.firstOrNull {
+                it.id.toString() == preflightDecision.workIdToPersistAndObserve
+            } ?: throw IllegalStateException("Persisted active work disappeared during enqueue preflight")
             AppLog.i(
                 this@MainActivity,
                 logTag,
@@ -706,6 +719,14 @@ class MainActivity : AppCompatActivity() {
             attachToCompilationWork(existing, previousRecord)
             emitTransientStatus("Compilation already active; reconnected to ${existing.id}")
             return
+        }
+        val replaceStaleWork = preflightDecision.action == CompilationEnqueueAction.REPLACE_STALE
+        if (replaceStaleWork) {
+            AppLog.w(
+                this@MainActivity,
+                logTag,
+                "Explicit new compilation will REPLACE orphaned active unique work because no matching active durable record exists"
+            )
         }
 
         val scanProfile = selectedCheckpointProfile()
@@ -747,6 +768,7 @@ class MainActivity : AppCompatActivity() {
         val request = OneTimeWorkRequestBuilder<CompilationWorker>()
             .setInputData(inputData)
             .build()
+        val enqueuePolicy = if (replaceStaleWork) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP
 
         val now = System.currentTimeMillis()
         val record = CompilationJobRecord(
@@ -761,6 +783,9 @@ class MainActivity : AppCompatActivity() {
             createdAtMs = now,
             updatedAtMs = now,
             outputUri = compilationContentUri(expectedOutput).toString(),
+            sourcePermissionPersisted = contentResolver.persistedUriPermissions.any { permission ->
+                permission.uri == uri && permission.isReadPermission
+            },
             settings = CompilationJobSettings(
                 scanWindowJson = scanWindowJson,
                 scanModeOrdinal = requestedScanMode.ordinal,
@@ -784,7 +809,7 @@ class MainActivity : AppCompatActivity() {
         )
 
         val accepted = withContext(Dispatchers.IO) {
-            workManager.enqueueUniqueWork(compilationWorkName, ExistingWorkPolicy.KEEP, request).result.get()
+            workManager.enqueueUniqueWork(compilationWorkName, enqueuePolicy, request).result.get()
             val unique = workManager.getWorkInfosForUniqueWork(compilationWorkName).get()
             unique.firstOrNull { isActiveWorkManagerState(it.state) }
                 ?: workManager.getWorkInfoById(request.id).get()
@@ -800,7 +825,7 @@ class MainActivity : AppCompatActivity() {
                     stage = "metadata recovery",
                     progressMessage = "Attached to existing unique work; original output metadata was unavailable",
                     errorStage = "metadata recovery",
-                    errorMessage = "KEEP retained a different WorkRequest"
+                    errorMessage = "$enqueuePolicy retained a different WorkRequest"
                 )
             compilationJobStore.save(acceptedRecord)
             AppLog.w(
@@ -812,7 +837,7 @@ class MainActivity : AppCompatActivity() {
         AppLog.i(
             this@MainActivity,
             logTag,
-            "work UUID=${accepted.id} unique work name=$compilationWorkName enqueue policy=KEEP " +
+            "work UUID=${accepted.id} unique work name=$compilationWorkName enqueue policy=$enqueuePolicy " +
                 "previous job state=${previousRecord?.state ?: "none"} new job state=${accepted.state} cancellation reason=none"
         )
         attachToCompilationWork(accepted, compilationJobStore.load())
@@ -913,6 +938,27 @@ class MainActivity : AppCompatActivity() {
         dismissCompilationWorkObserver()
         lifecycleScope.launch {
             val saved = compilationJobStore.load()
+            val reportedTerminalState = workInfo.outputData
+                .getString(CompilationJobContract.KEY_PIPELINE_STATE)
+                ?.let { raw -> runCatching { CompilationPipelineState.valueOf(raw) }.getOrNull() }
+            val previewClassification = workInfo.outputData
+                .getString(CompilationJobContract.KEY_PREVIEW_CLASSIFICATION)
+                ?.let { raw -> runCatching { CompilationPreviewClassification.valueOf(raw) }.getOrNull() }
+                ?: saved?.previewClassification
+                ?: CompilationPreviewClassification.NONE
+            val terminalState = if (
+                reportedTerminalState == CompilationPipelineState.PROVISIONAL_SUCCEEDED ||
+                previewClassification == CompilationPreviewClassification.PROVISIONAL
+            ) {
+                CompilationPipelineState.PROVISIONAL_SUCCEEDED
+            } else {
+                CompilationPipelineState.SUCCEEDED
+            }
+            val completionMessage = if (terminalState == CompilationPipelineState.PROVISIONAL_SUCCEEDED) {
+                "Provisional preview ready"
+            } else {
+                "Compilation complete"
+            }
             val outputPath = workInfo.outputData.getString(CompilationWorker.KEY_OUTPUT_PATH)
                 .orEmpty().ifBlank { saved?.expectedOutputPath.orEmpty() }
             val outputUri = workInfo.outputData.getString(CompilationJobContract.KEY_OUTPUT_URI)
@@ -947,25 +993,33 @@ class MainActivity : AppCompatActivity() {
 
             val completed = compilationJobStore.update(workInfo.id.toString()) { record ->
                 record.copy(
-                    state = CompilationPipelineState.SUCCEEDED,
-                    stage = "succeeded",
+                    state = terminalState,
+                    stage = if (terminalState == CompilationPipelineState.PROVISIONAL_SUCCEEDED) {
+                        "provisional succeeded"
+                    } else {
+                        "succeeded"
+                    },
                     progressPercent = 100,
-                    progressMessage = "Compilation complete",
+                    progressMessage = completionMessage,
                     completedAtMs = System.currentTimeMillis(),
                     outputUri = verified.uri.toString(),
                     outputPath = verified.file.absolutePath,
                     outputSizeBytes = verified.sizeBytes,
                     outputDurationMs = verified.durationMs,
                     previewAvailable = true,
+                    previewClassification = previewClassification.takeIf {
+                        it != CompilationPreviewClassification.NONE
+                    } ?: CompilationPreviewClassification.CONFIRMED,
+                    lastSuccessfulStage = "preview",
                     errorStage = "",
                     errorType = "",
                     errorMessage = ""
                 )
             }
-            currentPipelineState = CompilationPipelineState.SUCCEEDED
+            currentPipelineState = terminalState
             showPendingCompilationPreview(verified.file, outputFormat, verified.uri)
             emitCompilationProgress(
-                "Compilation complete: ${formatBytes(verified.sizeBytes)}, ${formatDurationMs(verified.durationMs)}",
+                "$completionMessage: ${formatBytes(verified.sizeBytes)}, ${formatDurationMs(verified.durationMs)}",
                 100
             )
             AppLog.i(this@MainActivity, logTag, "Restored output URI=${completed?.outputUri} size=${verified.sizeBytes} durationMs=${verified.durationMs}")
@@ -1236,7 +1290,8 @@ class MainActivity : AppCompatActivity() {
         currentPipelineState = record.state
         latestWorkManagerState = null
         when (record.state) {
-            CompilationPipelineState.SUCCEEDED -> restoreSuccessfulRecord(record)
+            CompilationPipelineState.SUCCEEDED,
+            CompilationPipelineState.PROVISIONAL_SUCCEEDED -> restoreSuccessfulRecord(record)
             CompilationPipelineState.FAILED -> {
                 emitCompilationProgress(
                     "Compilation failed at ${record.errorStage.ifBlank { record.stage }}: ${record.errorMessage.ifBlank { record.progressMessage }}",
@@ -1270,6 +1325,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun restoreSuccessfulRecord(record: CompilationJobRecord) {
         lifecycleScope.launch {
+            val provisional = record.state == CompilationPipelineState.PROVISIONAL_SUCCEEDED ||
+                record.previewClassification == CompilationPreviewClassification.PROVISIONAL
+            val completionMessage = if (provisional) "Provisional preview ready" else "Compilation complete"
             val verified = withContext(Dispatchers.IO) {
                 verifyCompilationOutput(record.outputPath.ifBlank { record.expectedOutputPath }, record.outputUri)
             }
@@ -1300,11 +1358,17 @@ class MainActivity : AppCompatActivity() {
                     outputUri = verified.uri.toString(),
                     outputSizeBytes = verified.sizeBytes,
                     outputDurationMs = verified.durationMs,
-                    previewAvailable = true
+                    previewAvailable = true,
+                    previewClassification = if (provisional) {
+                        CompilationPreviewClassification.PROVISIONAL
+                    } else {
+                        CompilationPreviewClassification.CONFIRMED
+                    },
+                    lastSuccessfulStage = "preview"
                 )
             }
             emitCompilationProgress(
-                "Compilation complete: ${formatBytes(verified.sizeBytes)}, ${formatDurationMs(verified.durationMs)}",
+                "$completionMessage: ${formatBytes(verified.sizeBytes)}, ${formatDurationMs(verified.durationMs)}",
                 100
             )
             setUiBusy(false)
@@ -1322,20 +1386,33 @@ class MainActivity : AppCompatActivity() {
                 verifyCompilationOutput(record.outputPath.ifBlank { record.expectedOutputPath }, record.outputUri)
             }
             if (verified != null) {
+                val recoveredState = if (
+                    record.previewClassification == CompilationPreviewClassification.PROVISIONAL
+                ) {
+                    CompilationPipelineState.PROVISIONAL_SUCCEEDED
+                } else {
+                    CompilationPipelineState.SUCCEEDED
+                }
+                val recoveredMessage = if (recoveredState == CompilationPipelineState.PROVISIONAL_SUCCEEDED) {
+                    "WorkManager history missing; verified provisional preview"
+                } else {
+                    "WorkManager history missing; verified completed output"
+                }
                 val recovered = record.copy(
-                    state = CompilationPipelineState.SUCCEEDED,
+                    state = recoveredState,
                     stage = "recovered output",
                     progressPercent = 100,
-                    progressMessage = "WorkManager history missing; verified completed output",
+                    progressMessage = recoveredMessage,
                     completedAtMs = System.currentTimeMillis(),
                     outputPath = verified.file.absolutePath,
                     outputUri = verified.uri.toString(),
                     outputSizeBytes = verified.sizeBytes,
                     outputDurationMs = verified.durationMs,
-                    previewAvailable = true
+                    previewAvailable = true,
+                    lastSuccessfulStage = "preview"
                 )
                 compilationJobStore.save(recovered)
-                currentPipelineState = CompilationPipelineState.SUCCEEDED
+                currentPipelineState = recoveredState
                 restoreSuccessfulRecord(recovered)
                 return@launch
             }
@@ -2545,6 +2622,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         const val CLIP_PLAN_TIMEOUT_MS = 10_000L
         const val SOURCE_PREPARATION_TIMEOUT_MS = 30_000L
         const val EXPORT_TIMEOUT_MS = 30L * 60L * 1000L
+        const val OUTPUT_DURATION_TOLERANCE_MS = 2_000L
         const val VERIFY_TIMEOUT_MS = 30_000L
     }
 
@@ -3078,7 +3156,10 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
 
             var hasCapturedFirstOne = false
             val confirmedLedger = IncrementalTransitionLedger(scanConfig.dedupeMs)
+            val candidateConfirmationEvidence = ArrayList<CandidateConfirmationEvidence>()
             val ocrPassStart = SystemClock.elapsedRealtime()
+            val globalConfirmationBudgetMs = ConfirmationTimeoutPolicy.overallMs(candidateWindowsForRefine.size)
+            val globalConfirmationDeadlineMs = ocrPassStart + globalConfirmationBudgetMs
             AppLog.i(context, tag, "[finalize] beginning number confirmation thread=${Thread.currentThread().name}")
             for ((index, candidate) in candidateWindowsForRefine.withIndex()) {
                 currentCoroutineContext().ensureActive()
@@ -3090,6 +3171,26 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     ConfirmationTimeoutPolicy.GENERIC_CANDIDATE_WORK_UNITS
                 }
                 val candidateLimitMs = ConfirmationTimeoutPolicy.candidateMs(plannedWorkUnits)
+                val candidateStartMonotonicMs = SystemClock.elapsedRealtime()
+                val deadlineTracker = ConfirmationDeadlineTracker(
+                    globalStartMs = ocrPassStart,
+                    globalBudgetMs = globalConfirmationBudgetMs,
+                    localStartMs = candidateStartMonotonicMs,
+                    localBudgetMs = candidateLimitMs,
+                    clock = MonotonicTimeSource { SystemClock.elapsedRealtime() }
+                )
+                var completedWorkUnits = 0
+                var currentWork = "candidate-start"
+                var innerTimeoutCount = 0
+                var innerFailureCount = 0
+                var partialEvidenceCollected = candidate.fromStateStable || candidate.toStateStable
+                var candidateDisposition = "inconclusive"
+                var timeoutSource = "none"
+                var exceptionType = "none"
+                var cancellationCause = "none"
+                var beforeObserved: Int? = candidate.fromNumber.takeIf { candidate.fromStateStable }
+                var afterObserved: Int? = candidate.toNumber.takeIf { candidate.toStateStable }
+                var dispositionReason = "strict confirmation did not complete"
                 try {
                     // A timeout is evidence about this interval only.  Never let it discard later
                     // semantic intervals that have already been retained by the checkpoint timeline.
@@ -3105,11 +3206,14 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     val semantic = classifyTransition(candidate.fromNumber, candidate.toNumber)
                     if (!semantic.accepted || !semantic.sequential) {
                         rejectedCandidates++
+                        candidateDisposition = "rejected"
+                        dispositionReason = "non-sequential stable endpoints ${semantic.label}"
                         AppLog.i(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=rejected-non-sequential state=${semantic.label}")
                         return@withTimeout
                     }
                 }
 
+                currentWork = "before-state"
                 val beforeNumber = if (candidate.fromStateStable) {
                     TimedDetection(candidate.fromNumber, 0, candidateStart)
                 } else if (isCheckpointInterval) {
@@ -3122,6 +3226,12 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     scanWindow, sourceRotationDegrees, scanConfig.ocrFrameWidthPx, timing
                 )
                 ocrCalls += beforeNumber.calls
+                completedWorkUnits += beforeNumber.calls.coerceAtLeast(1)
+                innerTimeoutCount += beforeNumber.timeoutCount
+                innerFailureCount += beforeNumber.failureCount
+                beforeObserved = beforeNumber.value
+                partialEvidenceCollected = partialEvidenceCollected || beforeNumber.calls > 0 || beforeNumber.value != null
+                currentWork = "after-state"
                 val afterNumber = if (candidate.toStateStable) {
                     TimedDetection(candidate.toNumber, 0, candidateEnd)
                 } else if (isCheckpointInterval) {
@@ -3134,6 +3244,11 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     scanWindow, sourceRotationDegrees, scanConfig.ocrFrameWidthPx, timing
                 )
                 ocrCalls += afterNumber.calls
+                completedWorkUnits += afterNumber.calls.coerceAtLeast(1)
+                innerTimeoutCount += afterNumber.timeoutCount
+                innerFailureCount += afterNumber.failureCount
+                afterObserved = afterNumber.value
+                partialEvidenceCollected = partialEvidenceCollected || afterNumber.calls > 0 || afterNumber.value != null
                 var transitionMs: Long? = null
                 var transitionLabel = "Transition"
                 var transitionTargetNumber: Int? = afterNumber.value
@@ -3141,6 +3256,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 transitionEvidence.add("Visual pass reason=${candidate.reason}")
 
                 if (!hasCapturedFirstOne && afterNumber.value == 1 && beforeNumber.value != 1) {
+                    currentWork = "refine-first-one"
                     val firstOneMs = if (isCheckpointInterval) {
                         refineCheckpointTransitionBoundary(
                             frameProvider, candidateStart, candidateEnd, 1,
@@ -3161,6 +3277,9 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                         )
                     }
                     ocrCalls += firstOneMs.calls
+                    completedWorkUnits += firstOneMs.calls
+                    innerTimeoutCount += firstOneMs.timeoutCount
+                    innerFailureCount += firstOneMs.failureCount
                     if (firstOneMs.timeMs != null) {
                         transitionMs = firstOneMs.timeMs
                         transitionLabel = "First 1"
@@ -3173,6 +3292,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 }
 
                 if (transitionMs == null && beforeNumber.value != null && afterNumber.value != null && beforeNumber.value != afterNumber.value) {
+                    currentWork = "refine-number-change"
                     val refined = if (isCheckpointInterval) {
                         refineCheckpointTransitionBoundary(
                             frameProvider, candidateStart, candidateEnd, afterNumber.value,
@@ -3186,6 +3306,9 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                         scanConfig.refineWindowMs, durationMs, scanConfig.ocrFrameWidthPx
                     )
                     ocrCalls += refined.calls
+                    completedWorkUnits += refined.calls
+                    innerTimeoutCount += refined.timeoutCount
+                    innerFailureCount += refined.failureCount
                     if (refined.timeMs != null) {
                         transitionMs = refined.timeMs
                         transitionLabel = "Number ${beforeNumber.value} -> ${afterNumber.value}"
@@ -3195,6 +3318,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 }
 
                 if (transitionMs == null && beforeNumber.value == null && afterNumber.value != null) {
+                    currentWork = "refine-first-appearance"
                     val firstAppearMs = locateFirstNumberAppearance(
                         frameProvider = frameProvider,
                         startMs = sampleStart,
@@ -3207,6 +3331,9 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                         timing = timing
                     )
                     ocrCalls += firstAppearMs.calls
+                    completedWorkUnits += firstAppearMs.calls
+                    innerTimeoutCount += firstAppearMs.timeoutCount
+                    innerFailureCount += firstAppearMs.failureCount
                     if (firstAppearMs.timeMs != null) {
                         transitionMs = firstAppearMs.timeMs
                         transitionLabel = "Start ${afterNumber.value}"
@@ -3220,13 +3347,18 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 if (transitionMs == null) {
                     rejectedCandidates++
                     transitionEvidence.add("No valid OCR timestamp found")
-                    AppLog.i(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=unconfirmed-no-text")
+                    candidateDisposition = if (innerTimeoutCount > 0 && partialEvidenceCollected) "partial_evidence" else "ocr_no_text"
+                    timeoutSource = if (innerTimeoutCount > 0) "inner_frame_or_ocr" else "none"
+                    dispositionReason = "no strict timestamp; innerTimeouts=$innerTimeoutCount innerFailures=$innerFailureCount"
+                    AppLog.i(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=$candidateDisposition timeoutSource=$timeoutSource")
                     return@withTimeout
                 }
                 val toNumber = transitionTargetNumber
                 if (toNumber == null) {
                     rejectedCandidates++
                     transitionEvidence.add("No confirmed target number")
+                    candidateDisposition = "inconclusive"
+                    dispositionReason = "no confirmed target number"
                     AppLog.i(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=rejected-no-target")
                     return@withTimeout
                 }
@@ -3236,6 +3368,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 if (!semantic.sequential) {
                     rejectedCandidates++
                     transitionEvidence.add("Rejected non-sequential transition ${semantic.label}")
+                    candidateDisposition = "rejected"
+                    dispositionReason = "non-sequential refined transition ${semantic.label}"
                     AppLog.i(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=rejected-non-sequential state=${semantic.label}")
                     return@withTimeout
                 }
@@ -3245,6 +3379,9 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 val cutEndMs = min(durationMs, transitionAtMs + 30_000L)
                 transitionEvidence.add("Semantic transition ${semantic.label}")
                 acceptedTransitions++
+                candidateDisposition = "confirmed"
+                dispositionReason = "semantic transition ${semantic.label}"
+                currentWork = "complete"
                 transitionMarks.add(
                     TransitionMark(
                         eventBoundaryMs = transitionAtMs,
@@ -3272,13 +3409,68 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     }
                 } catch (timeout: TimeoutCancellationException) {
                     candidateTimeouts++
-                    rejectedCandidates++
-                    AppLog.w(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=unconfirmed-timeout scope=candidate limitMs=$candidateLimitMs plannedWorkUnits=$plannedWorkUnits; continuing with later intervals and preserving ${confirmedLedger.size} confirmations")
+                    val timeoutSnapshot = deadlineTracker.snapshot()
+                    candidateDisposition = if (partialEvidenceCollected) "partial_evidence" else "local_timeout"
+                    timeoutSource = propagatedConfirmationTimeoutSource(timeoutSnapshot)
+                    exceptionType = timeout::class.java.name
+                    dispositionReason = "strict confirmation exceeded candidate wall guard"
+                    AppLog.w(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=$candidateDisposition timeoutSource=$timeoutSource; continuing with later intervals and preserving ${confirmedLedger.size} confirmations")
                 } catch (cancelled: CancellationException) {
+                    candidateDisposition = "canceled"
+                    timeoutSource = "none"
+                    exceptionType = cancelled::class.java.name
+                    cancellationCause = cancelled.message ?: "unspecified cancellation"
+                    dispositionReason = "parent or user cancellation"
                     throw cancelled
                 } catch (failure: Exception) {
-                    rejectedCandidates++
-                    AppLog.w(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=unconfirmed-mlkit-failure type=${failure::class.java.simpleName}", failure)
+                    candidateDisposition = if (failure::class.java.name.contains("ocr", ignoreCase = true) ||
+                        failure::class.java.name.contains("mlkit", ignoreCase = true)
+                    ) "ocr_failure" else "decoder_failure"
+                    exceptionType = failure::class.java.name
+                    dispositionReason = failure.message ?: failure::class.java.simpleName
+                    innerFailureCount++
+                    AppLog.w(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=$candidateDisposition type=${failure::class.java.simpleName}", failure)
+                } finally {
+                    val deadline = deadlineTracker.snapshot()
+                    val evidence = CandidateConfirmationEvidence(
+                        candidateIndex = index,
+                        candidateTimestampMs = candidate.seedMs,
+                        candidateStartMonotonicMs = candidateStartMonotonicMs,
+                        globalConfirmationStartMonotonicMs = ocrPassStart,
+                        globalDeadlineMonotonicMs = globalConfirmationDeadlineMs,
+                        localDeadlineMonotonicMs = deadline.localDeadlineMs,
+                        localBudgetMs = candidateLimitMs,
+                        remainingGlobalBudgetMs = deadline.remainingGlobalMs,
+                        elapsedCandidateMs = deadline.elapsedLocalMs,
+                        elapsedGlobalMs = deadline.elapsedGlobalMs,
+                        currentWork = currentWork,
+                        plannedWorkUnits = plannedWorkUnits,
+                        completedWorkUnits = completedWorkUnits,
+                        timeoutSource = timeoutSource,
+                        exceptionType = exceptionType,
+                        cancellationCause = cancellationCause,
+                        partialEvidenceCollected = partialEvidenceCollected,
+                        innerTimeoutCount = innerTimeoutCount,
+                        innerFailureCount = innerFailureCount,
+                        beforeNumber = beforeObserved,
+                        afterNumber = afterObserved,
+                        disposition = candidateDisposition,
+                        reason = dispositionReason
+                    )
+                    candidateConfirmationEvidence += evidence
+                    AppLog.i(
+                        context,
+                        tag,
+                        "[confirmation evidence] candidateIndex=$index timestampMs=${candidate.seedMs} " +
+                            "candidateStartMonotonicMs=$candidateStartMonotonicMs globalStartMonotonicMs=$ocrPassStart " +
+                            "globalDeadlineMonotonicMs=$globalConfirmationDeadlineMs localDeadlineMonotonicMs=${deadline.localDeadlineMs} " +
+                            "localBudgetMs=$candidateLimitMs remainingGlobalBudgetMs=${deadline.remainingGlobalMs} " +
+                            "elapsedCandidateMs=${deadline.elapsedLocalMs} elapsedGlobalMs=${deadline.elapsedGlobalMs} " +
+                            "currentWork=$currentWork plannedWorkUnits=$plannedWorkUnits completedWorkUnits=$completedWorkUnits " +
+                            "timeoutSource=$timeoutSource exceptionType=$exceptionType cancellationCause=$cancellationCause " +
+                            "partialEvidence=$partialEvidenceCollected innerTimeouts=$innerTimeoutCount innerFailures=$innerFailureCount " +
+                            "disposition=$candidateDisposition reason=${dispositionReason.take(160)}"
+                    )
                 }
             }
             AppLog.i(
@@ -3289,28 +3481,83 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             val uniqueTransitions = confirmedLedger.snapshot()
             AppLog.i(context, tag, "[finalize] confirmed transitions=${uniqueTransitions.size} thread=${Thread.currentThread().name}")
 
-            val artifactPadMs = transitionStyle.edgePaddingMs
+            val confirmationByIndex = candidateConfirmationEvidence.associateBy { it.candidateIndex }
+            fun provisionalEvidenceFor(
+                candidates: List<TransitionCandidateWindow>,
+                includeConfirmationEvidence: Boolean
+            ): List<ProvisionalTransitionEvidence> = candidates.mapIndexed { index, candidate ->
+                val confirmation = confirmationByIndex[index].takeIf { includeConfirmationEvidence }
+                ProvisionalTransitionEvidence(
+                    timestampMs = candidate.seedMs,
+                    visualScore = candidate.peakScore,
+                    fromNumber = candidate.fromNumber,
+                    toNumber = candidate.toNumber,
+                    fromStateStable = candidate.fromStateStable,
+                    toStateStable = candidate.toStateStable,
+                    partialEvidence = confirmation?.partialEvidenceCollected == true,
+                    timeoutCount = (confirmation?.innerTimeoutCount ?: 0) +
+                        if (confirmation?.timeoutSource == "candidate_local") 1 else 0,
+                    reason = confirmation?.let { "${it.disposition}: ${it.reason}" }
+                        ?: "retained visual candidate without strict confirmation record"
+                )
+            }
+            val provisionalEvidence = provisionalEvidenceFor(
+                candidateWindowsForRefine,
+                includeConfirmationEvidence = true
+            )
+            val transitionPlanSelection = selectTransitionPlanWithBaselineFallback(
+                confirmedTimestampsMs = uniqueTransitions,
+                refinedEvidence = provisionalEvidence,
+                baselineEvidence = provisionalEvidenceFor(
+                    mergedCandidateWindows,
+                    includeConfirmationEvidence = false
+                ),
+                dedupeToleranceMs = scanConfig.dedupeMs
+            )
+            val transitionPlanPoints = transitionPlanSelection.points
+            val baselineVisualFallbackUsed = transitionPlanSelection.baselineFallbackUsed
+            if (baselineVisualFallbackUsed) {
+                AppLog.w(
+                    context,
+                    tag,
+                    "[clip plan] semantic refinement produced no usable points; restored " +
+                        "${transitionPlanPoints.size} provisional point(s) from preserved baseline candidates"
+                )
+            }
+            val provisionalTransitions = transitionPlanPoints.filter {
+                it.classification != TransitionPlanClassification.CONFIRMED
+            }
+            AppLog.i(
+                context,
+                tag,
+                "[finalize] transition plan confirmed=${uniqueTransitions.size} " +
+                    "provisionalHigh=${provisionalTransitions.count { it.classification == TransitionPlanClassification.PROVISIONAL_HIGH }} " +
+                    "provisionalMedium=${provisionalTransitions.count { it.classification == TransitionPlanClassification.PROVISIONAL_MEDIUM }} " +
+                    "total=${transitionPlanPoints.size}"
+            )
+
             AppLog.i(context, tag, "[clip plan] generating clips thread=${Thread.currentThread().name}")
-            // Visual evidence may open an interval, but cannot create a primary-fixture clip.
-            val visualFallbackTransitions = emptyList<Long>()
-            val clipTransitions = if (uniqueTransitions.isNotEmpty()) uniqueTransitions else visualFallbackTransitions
-            val clipSourceLabel = if (uniqueTransitions.isNotEmpty()) "OCR-confirmed" else "visually inferred"
+            val visualFallbackTransitions = provisionalTransitions.map { it.timestampMs }
+            val clipTransitions = transitionPlanPoints.map { it.timestampMs }
+            val clipSourceLabel = when {
+                visualFallbackTransitions.isEmpty() -> "OCR-confirmed"
+                uniqueTransitions.isEmpty() -> "provisional visual/OCR"
+                else -> "confirmed plus provisional"
+            }
             if (visualFallbackTransitions.isNotEmpty()) {
-                AppLog.w(context, tag, "[clip plan] using controlled visual fallback transitions=${visualFallbackTransitions.size}; no OCR-confirmed transitions")
+                AppLog.w(
+                    context,
+                    tag,
+                    "[clip plan] provisional preview enabled confirmed=${uniqueTransitions.size} " +
+                        "provisional=${visualFallbackTransitions.size}; primary confirmed-only QA remains ineligible"
+                )
             }
             progress(CompilationPipelineState.BUILDING_CLIP_PLAN, "Building clip plan from ${clipTransitions.size} $clipSourceLabel transitions", 54)
             val clipPlanStarted = SystemClock.elapsedRealtime()
             val merged = try {
                 withTimeout(CLIP_PLAN_TIMEOUT_MS) {
                     runInterruptible(Dispatchers.Default) {
-                        val rawSegments = clipTransitions.map { t ->
-                            val requested = buildRequestedSegment(t, durationMs)
-                            SegmentWindow(
-                                startMs = max(0L, requested.startMs - artifactPadMs),
-                                endMs = min(durationMs, requested.endMs + artifactPadMs)
-                            )
-                        }.sortedBy { it.startMs }
-                        mergeWithGap(rawSegments, transitionStyle.mergeGapMs)
+                        planExactTransitionSegments(clipTransitions, durationMs)
                     }
                 }
             } catch (timeout: TimeoutCancellationException) {
@@ -3366,7 +3613,10 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 acceptedTransitions = acceptedTransitions,
                 rejectedCandidates = rejectedCandidates,
                 fallbackUsed = fallbackUsed || visualFallbackTransitions.isNotEmpty(),
-                failureReason = if (visualFallbackTransitions.isNotEmpty()) "OCR confirmed none; used high-confidence visual fallback" else null,
+                failureReason = if (visualFallbackTransitions.isNotEmpty()) {
+                    "Provisional preview includes ${visualFallbackTransitions.size} non-confirmed transition(s); " +
+                        "baselineFallback=$baselineVisualFallbackUsed; confirmed-only fixture QA is ineligible"
+                } else null,
                 metrics = ScanMetrics(
                     scannerVersion = "v3-stable-state-topology-ocr",
                     wallClockMs = wallClockMs,
@@ -3383,7 +3633,10 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 transitionMarks = transitionMarks,
                 candidates = candidateWindows,
                 checkpointTimeline = checkpointTimeline.toList(),
-                recursiveStateEvidence = recursiveStateEvidence.toList()
+                recursiveStateEvidence = recursiveStateEvidence.toList(),
+                plannedSegments = merged,
+                candidateConfirmations = candidateConfirmationEvidence.toList(),
+                transitionPlanPoints = transitionPlanPoints
             )
             latestScanReportPath = try {
                 writeScanReport(report)
@@ -3400,7 +3653,18 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 candidateCount = candidateWindows.size,
                 candidateTimestampsMs = candidateWindows.map { it.seedMs },
                 scanBudgetReached = scanBudgetReached,
-                visualFallbackUsed = visualFallbackTransitions.isNotEmpty()
+                visualFallbackUsed = visualFallbackTransitions.isNotEmpty(),
+                confirmedTransitionCount = uniqueTransitions.size,
+                provisionalTransitionCount = provisionalTransitions.size,
+                rejectedTransitionCount = rejectedCandidates,
+                completedCheckpointCount = checkpointTimeline.size,
+                recursiveProbeCount = recursiveStateEvidence.size,
+                semanticLeafCount = candidateWindowsForRefine.size,
+                previewClassification = when {
+                    provisionalTransitions.isNotEmpty() -> CompilationPreviewClassification.PROVISIONAL
+                    uniqueTransitions.isNotEmpty() -> CompilationPreviewClassification.CONFIRMED
+                    else -> CompilationPreviewClassification.NONE
+                }
             )
         } finally {
             runCatching { frameProvider.close() }
@@ -3431,9 +3695,11 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         var calls = 0
         var singleHit: Int? = null
         var singleHitMs: Long? = null
+        var timeoutCount = 0
+        var failureCount = 0
         while (cursor <= endMs) {
             currentCoroutineContext().ensureActive()
-            val value = detectNumberAt(
+            val evidence = detectNumberEvidenceAt(
                 frameProvider = frameProvider,
                 cursorMs = cursor,
                 scanWindow = scanWindow,
@@ -3441,10 +3707,13 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 ocrFrameWidthPx = ocrFrameWidthPx,
                 timing = timing
             )
+            val value = evidence.value
+            timeoutCount += evidence.timeoutCount
+            failureCount += evidence.failureCount
             calls++
             if (value != null) {
                 if (singleHit == value) {
-                    return TimedDetection(value, calls, cursor)
+                    return TimedDetection(value, calls, cursor, timeoutCount, failureCount)
                 }
                 if (singleHit == null || singleHit != value) {
                     singleHit = value
@@ -3453,7 +3722,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             }
             cursor += safeStepMs
         }
-        return TimedDetection(singleHit, calls, singleHitMs)
+        return TimedDetection(singleHit, calls, singleHitMs, timeoutCount, failureCount)
     }
 
     /**
@@ -3474,7 +3743,13 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             frameProvider, centerMs, scanWindow, sourceRotationDegrees,
             ocrFrameWidthPx, durationMs, timing
         )
-        return TimedDetection(state.state.value, state.calls, centerMs.takeIf { state.state.stable })
+        return TimedDetection(
+            state.state.value,
+            state.calls,
+            centerMs.takeIf { state.state.stable },
+            state.timeoutCount,
+            state.failureCount
+        )
     }
 
     private suspend fun detectStableCheckpointState(
@@ -3491,6 +3766,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             .distinct()
         val votes = ArrayList<StableStateVote>(sampleTimes.size)
         var calls = 0
+        var timeoutCount = 0
+        var failureCount = 0
         for (sampleMs in sampleTimes) {
             currentCoroutineContext().ensureActive()
             val evidence = detectNumberEvidenceAt(
@@ -3511,9 +3788,16 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 preprocessMs = evidence.preprocessMs,
                 ocrMs = evidence.ocrMs
             )
+            timeoutCount += evidence.timeoutCount
+            failureCount += evidence.failureCount
             calls++
         }
-        return TimelineStateDetection(classifyStableNumberState(votes), calls)
+        return TimelineStateDetection(
+            state = classifyStableNumberState(votes),
+            calls = calls,
+            timeoutCount = timeoutCount,
+            failureCount = failureCount
+        )
     }
 
     private suspend fun investigateCheckpointCandidateIntervals(
@@ -3833,13 +4117,35 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
     ): NumberDetectionEvidence {
         var decoded: DecodedFrame?
         val requestedFrameWidth = ocrFrameWidthPx.coerceAtLeast(0)
-        val decodeMs = measureTimeMillis {
-            decoded = withTimeout(ConfirmationTimeoutPolicy.FRAME_EXTRACTION_MS) {
+        val decodeStartedMs = SystemClock.elapsedRealtime()
+        decoded = try {
+            withTimeout(ConfirmationTimeoutPolicy.FRAME_EXTRACTION_MS) {
                 frameProvider.frameAt(cursorMs, requestedFrameWidth)
             }
+        } catch (timeout: TimeoutCancellationException) {
+            val elapsedMs = SystemClock.elapsedRealtime() - decodeStartedMs
+            timing.decodeMs += elapsedMs
+            AppLog.w(
+                context,
+                tag,
+                "[frame] requestedTimestampMs=$cursorMs requestedWidth=$requestedFrameWidth " +
+                    "disposition=frame_extraction_timeout timeoutSource=frame_extraction " +
+                    "limitMs=${ConfirmationTimeoutPolicy.FRAME_EXTRACTION_MS} elapsedMs=$elapsedMs"
+            )
+            return NumberDetectionEvidence(
+                value = null,
+                decodedTimestampMs = null,
+                status = OcrCandidateStatus.FRAME_TIMEOUT.name,
+                timeoutCount = 1
+            )
         }
-        timing.decodeMs += decodeMs
-        val localDecoded = decoded ?: return NumberDetectionEvidence(null, null, OcrCandidateStatus.INVALID_FRAME.name)
+        timing.decodeMs += SystemClock.elapsedRealtime() - decodeStartedMs
+        val localDecoded = decoded ?: return NumberDetectionEvidence(
+            value = null,
+            decodedTimestampMs = null,
+            status = OcrCandidateStatus.INVALID_FRAME.name,
+            failureCount = 1
+        )
         val localFrame = localDecoded.bitmap
         var selectedDecodedTimestampMs = localDecoded.timeMs
 
@@ -3853,6 +4159,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
 
         return try {
             var detection = detectWithFrameWidth(localFrame)
+            var nestedTimeoutCount = 0
             if (
                 detection.value == null ||
                 (detection.confidence < 0.85f && requestedFrameWidth in 1..480)
@@ -3861,12 +4168,24 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 // At the maximum OCR width a retry would be the same seek and the same pixels;
                 // it only burns the direct-timeline budget without adding evidence.
                 if (retryWidth > requestedFrameWidth) {
-                    val fallbackDecodeMs = measureTimeMillis {
-                        decoded = withTimeout(ConfirmationTimeoutPolicy.FRAME_EXTRACTION_MS) {
+                    val fallbackDecodeStartedMs = SystemClock.elapsedRealtime()
+                    decoded = try {
+                        withTimeout(ConfirmationTimeoutPolicy.FRAME_EXTRACTION_MS) {
                             frameProvider.frameAt(cursorMs, retryWidth)
                         }
+                    } catch (timeout: TimeoutCancellationException) {
+                        val elapsedMs = SystemClock.elapsedRealtime() - fallbackDecodeStartedMs
+                        nestedTimeoutCount++
+                        AppLog.w(
+                            context,
+                            tag,
+                            "[frame] requestedTimestampMs=$cursorMs requestedWidth=$retryWidth " +
+                                "disposition=frame_retry_timeout timeoutSource=frame_extraction " +
+                                "limitMs=${ConfirmationTimeoutPolicy.FRAME_EXTRACTION_MS} elapsedMs=$elapsedMs partialEvidence=true"
+                        )
+                        null
                     }
-                    timing.decodeMs += fallbackDecodeMs
+                    timing.decodeMs += SystemClock.elapsedRealtime() - fallbackDecodeStartedMs
                     val fallbackFrame = decoded?.bitmap
                     if (fallbackFrame != null && fallbackFrame !== localFrame) {
                         val fallbackDetection = try {
@@ -3893,7 +4212,14 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 topology = detection.topology,
                 cropMs = detection.cropMs,
                 preprocessMs = detection.preprocessMs,
-                ocrMs = detection.ocrMs
+                ocrMs = detection.ocrMs,
+                timeoutCount = nestedTimeoutCount + if (
+                    detection.status == OcrCandidateStatus.OCR_TIMEOUT
+                ) 1 else 0,
+                failureCount = if (
+                    detection.status == OcrCandidateStatus.OCR_UNAVAILABLE ||
+                    detection.status == OcrCandidateStatus.INVALID_FRAME
+                ) 1 else 0
             )
         } finally {
             localFrame.recycle()
@@ -3933,33 +4259,19 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         AppLog.i(context, tag, "[export] source URI=$sourceUri thread=${Thread.currentThread().name}")
         AppLog.i(context, tag, "[export] destination URI/path=${output.absolutePath} thread=${Thread.currentThread().name}")
         try {
-            progress("Using ${quality.label} profile with ${transitionStyle.label}", 56)
-            progress("Opening source for direct export", 57)
-            val sourcePreparationStarted = SystemClock.elapsedRealtime()
-            AppLog.i(context, tag, "[export] source preparation beginning thread=${Thread.currentThread().name}")
-            val alignedSegments = try {
-                withTimeout(SOURCE_PREPARATION_TIMEOUT_MS) {
-                    runInterruptible(Dispatchers.IO) {
-                        alignSegmentsToVideoSyncSamples(
-                            sourceUri,
-                            mergeWithGap(segments.sortedBy { it.startMs }, transitionStyle.mergeGapMs)
-                        )
-                    }
-                }
-            } catch (timeout: TimeoutCancellationException) {
-                throw IllegalStateException(
-                    "Source preparation timed out after ${SOURCE_PREPARATION_TIMEOUT_MS}ms",
-                    timeout
-                )
-            }
+            progress("Using ${quality.label} profile with exact semantic cuts", 56)
+            progress("Preparing exact Media3 composition", 57)
+            val exactSegments = mergeOverlapping(segments.sortedBy { it.startMs })
+            val expectedDurationMs = expectedCompilationDurationMs(exactSegments)
             AppLog.i(
                 context,
                 tag,
-                "[export] source preparation completed in ${SystemClock.elapsedRealtime() - sourcePreparationStarted} ms thread=${Thread.currentThread().name}"
+                "[export] exporter=media3-transformer-1.9.3 style=${transitionStyle.label} stylePaddingApplied=false " +
+                    "segments=${exactSegments.size} expectedDurationMs=$expectedDurationMs thread=${Thread.currentThread().name}"
             )
             try {
                 withTimeout(EXPORT_TIMEOUT_MS) {
-                    materializeCompilation(sourceUri, alignedSegments, safeFormat, output) { message, percent ->
+                    Media3CompilationExporter(context).export(sourceUri, exactSegments, output) { message, percent ->
                         AppLog.i(context, tag, "[export] progress $percent%: $message thread=${Thread.currentThread().name}")
                         progress(message, percent)
                     }
@@ -3973,6 +4285,10 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 "[export] completed in ${SystemClock.elapsedRealtime() - exportStarted} ms thread=${Thread.currentThread().name}"
             )
             val verified = verifyCompilationOutput(output)
+            val durationDeltaMs = kotlin.math.abs(verified.durationMs - expectedDurationMs)
+            check(durationDeltaMs <= OUTPUT_DURATION_TOLERANCE_MS) {
+                "Export duration ${verified.durationMs}ms differs from exact clip plan ${expectedDurationMs}ms by ${durationDeltaMs}ms"
+            }
             progress("Compilation ready to save", 94)
             return@withContext verified
         } catch (cancelled: CancellationException) {
@@ -4218,6 +4534,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             OcrCandidateStatus.NO_TEXT, OcrCandidateStatus.NO_TRANSITION -> 0.2f
             OcrCandidateStatus.OCR_UNAVAILABLE,
             OcrCandidateStatus.OCR_TIMEOUT,
+            OcrCandidateStatus.FRAME_TIMEOUT,
             OcrCandidateStatus.INVALID_FRAME -> 0f
         }
         return disposition + result.confidence.coerceIn(0f, 1f) * 0.25f +
@@ -4807,6 +5124,63 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     })
                 }
             })
+            put("clipPlan", JSONObject().apply {
+                put("policy", "exact-semantic-windows-v1")
+                put("resultClassification", if (report.transitionPlanPoints.any {
+                        it.classification != TransitionPlanClassification.CONFIRMED
+                    }) "PROVISIONAL" else "CONFIRMED")
+                put("clipCount", report.plannedSegments.size)
+                put("totalDurationMs", expectedCompilationDurationMs(report.plannedSegments))
+                put("transitionPoints", JSONArray().apply {
+                    report.transitionPlanPoints.forEach { point ->
+                        put(JSONObject().apply {
+                            put("timestampMs", point.timestampMs)
+                            put("classification", point.classification.name)
+                            put("confidence", point.confidence)
+                            put("visualScore", point.visualScore)
+                            put("reason", point.reason)
+                        })
+                    }
+                })
+                put("segments", JSONArray().apply {
+                    report.plannedSegments.forEach { segment ->
+                        put(JSONObject().apply {
+                            put("startMs", segment.startMs)
+                            put("endMs", segment.endMs)
+                            put("durationMs", segment.endMs - segment.startMs)
+                        })
+                    }
+                })
+            })
+            put("candidateConfirmations", JSONArray().apply {
+                report.candidateConfirmations.forEach { evidence ->
+                    put(JSONObject().apply {
+                        put("candidateIndex", evidence.candidateIndex)
+                        put("candidateTimestampMs", evidence.candidateTimestampMs)
+                        put("candidateStartMonotonicMs", evidence.candidateStartMonotonicMs)
+                        put("globalConfirmationStartMonotonicMs", evidence.globalConfirmationStartMonotonicMs)
+                        put("globalDeadlineMonotonicMs", evidence.globalDeadlineMonotonicMs)
+                        put("localDeadlineMonotonicMs", evidence.localDeadlineMonotonicMs)
+                        put("localBudgetMs", evidence.localBudgetMs)
+                        put("remainingGlobalBudgetMs", evidence.remainingGlobalBudgetMs)
+                        put("elapsedCandidateMs", evidence.elapsedCandidateMs)
+                        put("elapsedGlobalMs", evidence.elapsedGlobalMs)
+                        put("currentWork", evidence.currentWork)
+                        put("plannedWorkUnits", evidence.plannedWorkUnits)
+                        put("completedWorkUnits", evidence.completedWorkUnits)
+                        put("timeoutSource", evidence.timeoutSource)
+                        put("exceptionType", evidence.exceptionType)
+                        put("cancellationCause", evidence.cancellationCause)
+                        put("partialEvidenceCollected", evidence.partialEvidenceCollected)
+                        put("innerTimeoutCount", evidence.innerTimeoutCount)
+                        put("innerFailureCount", evidence.innerFailureCount)
+                        put("beforeNumber", evidence.beforeNumber ?: JSONObject.NULL)
+                        put("afterNumber", evidence.afterNumber ?: JSONObject.NULL)
+                        put("disposition", evidence.disposition)
+                        put("reason", evidence.reason)
+                    })
+                }
+            })
             put("checkpointTimeline", JSONArray().apply {
                 report.checkpointTimeline.forEach { checkpoint ->
                     put(stableStateEvidenceJson(checkpoint.timeMs, "coarse-checkpoint", checkpoint.state))
@@ -4849,7 +5223,12 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             })
             put("savedAtMs", System.currentTimeMillis())
         }
-        output.writeText(payload.toString(2))
+        val temporary = File(reportDir, ".${output.name}.tmp")
+        if (temporary.exists()) temporary.delete()
+        temporary.writeText(payload.toString(2))
+        check(temporary.renameTo(output)) {
+            "Could not atomically publish scan report ${output.absolutePath}"
+        }
         return output.absolutePath
     }
 
@@ -5290,7 +5669,14 @@ data class ScanFindResult(
     val candidateCount: Int = 0,
     val candidateTimestampsMs: List<Long> = emptyList(),
     val scanBudgetReached: Boolean = false,
-    val visualFallbackUsed: Boolean = false
+    val visualFallbackUsed: Boolean = false,
+    val confirmedTransitionCount: Int = 0,
+    val provisionalTransitionCount: Int = 0,
+    val rejectedTransitionCount: Int = 0,
+    val completedCheckpointCount: Int = 0,
+    val recursiveProbeCount: Int = 0,
+    val semanticLeafCount: Int = 0,
+    val previewClassification: CompilationPreviewClassification = CompilationPreviewClassification.NONE
 )
 
 data class VerifiedCompilationOutput(
@@ -5328,7 +5714,36 @@ private data class ScanFindReport(
     val transitionMarks: List<TransitionMark>,
     val candidates: List<TransitionCandidateWindow>,
     val checkpointTimeline: List<CheckpointTimelineEntry>,
-    val recursiveStateEvidence: List<StateTimelineEvidenceEntry>
+    val recursiveStateEvidence: List<StateTimelineEvidenceEntry>,
+    val plannedSegments: List<SegmentWindow>,
+    val candidateConfirmations: List<CandidateConfirmationEvidence>,
+    val transitionPlanPoints: List<PlannedTransitionPoint>
+)
+
+private data class CandidateConfirmationEvidence(
+    val candidateIndex: Int,
+    val candidateTimestampMs: Long,
+    val candidateStartMonotonicMs: Long,
+    val globalConfirmationStartMonotonicMs: Long,
+    val globalDeadlineMonotonicMs: Long,
+    val localDeadlineMonotonicMs: Long,
+    val localBudgetMs: Long,
+    val remainingGlobalBudgetMs: Long,
+    val elapsedCandidateMs: Long,
+    val elapsedGlobalMs: Long,
+    val currentWork: String,
+    val plannedWorkUnits: Int,
+    val completedWorkUnits: Int,
+    val timeoutSource: String,
+    val exceptionType: String,
+    val cancellationCause: String,
+    val partialEvidenceCollected: Boolean,
+    val innerTimeoutCount: Int,
+    val innerFailureCount: Int,
+    val beforeNumber: Int?,
+    val afterNumber: Int?,
+    val disposition: String,
+    val reason: String
 )
 
 private data class NumberDetectionResult(
@@ -5353,6 +5768,7 @@ private enum class OcrCandidateStatus {
     AMBIGUOUS_TOPOLOGY,
     OCR_UNAVAILABLE,
     OCR_TIMEOUT,
+    FRAME_TIMEOUT,
     INVALID_FRAME
 }
 
@@ -5398,7 +5814,9 @@ data class TransitionMark(
 private data class TimedDetection(
     val value: Int?,
     val calls: Int,
-    val timeMs: Long?
+    val timeMs: Long?,
+    val timeoutCount: Int = 0,
+    val failureCount: Int = 0
 )
 
 private data class NumberDetectionEvidence(
@@ -5413,7 +5831,9 @@ private data class NumberDetectionEvidence(
     val topology: GlyphTopologyEvidence? = null,
     val cropMs: Long = 0L,
     val preprocessMs: Long = 0L,
-    val ocrMs: Long = 0L
+    val ocrMs: Long = 0L,
+    val timeoutCount: Int = 0,
+    val failureCount: Int = 0
 )
 
 private data class OcrAdjudication(
@@ -5424,7 +5844,9 @@ private data class OcrAdjudication(
 
 private data class TimelineStateDetection(
     val state: StableNumberState,
-    val calls: Int
+    val calls: Int,
+    val timeoutCount: Int = 0,
+    val failureCount: Int = 0
 )
 
 private data class CheckpointCandidateInvestigation(

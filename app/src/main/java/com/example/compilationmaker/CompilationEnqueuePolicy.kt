@@ -8,7 +8,8 @@ internal data class UniqueCompilationWorkSnapshot(
 
 internal enum class CompilationEnqueueAction {
     ENQUEUE_PROPOSED,
-    ATTACH_EXISTING
+    ATTACH_EXISTING,
+    REPLACE_STALE
 }
 
 /**
@@ -23,23 +24,34 @@ internal data class CompilationEnqueueDecision(
 internal fun decideUniqueCompilationEnqueue(
     proposedWorkId: String,
     persistedWorkId: String?,
+    persistedWorkIsActive: Boolean,
     uniqueWork: List<UniqueCompilationWorkSnapshot>
 ): CompilationEnqueueDecision {
     require(proposedWorkId.isNotBlank()) { "Proposed work id must not be blank" }
 
     val activeWork = uniqueWork.filter { it.isActive && it.workId.isNotBlank() }
-    val retained = activeWork.firstOrNull { it.workId == persistedWorkId }
-        ?: activeWork.firstOrNull()
+    val retained = activeWork.firstOrNull {
+        persistedWorkIsActive && it.workId == persistedWorkId
+    }
 
-    return if (retained != null) {
-        CompilationEnqueueDecision(
-            action = CompilationEnqueueAction.ATTACH_EXISTING,
-            workIdToPersistAndObserve = retained.workId
-        )
-    } else {
-        CompilationEnqueueDecision(
-            action = CompilationEnqueueAction.ENQUEUE_PROPOSED,
-            workIdToPersistAndObserve = proposedWorkId
-        )
+    return when {
+        retained != null -> {
+            CompilationEnqueueDecision(
+                action = CompilationEnqueueAction.ATTACH_EXISTING,
+                workIdToPersistAndObserve = retained.workId
+            )
+        }
+        activeWork.isNotEmpty() -> {
+            CompilationEnqueueDecision(
+                action = CompilationEnqueueAction.REPLACE_STALE,
+                workIdToPersistAndObserve = proposedWorkId
+            )
+        }
+        else -> {
+            CompilationEnqueueDecision(
+                action = CompilationEnqueueAction.ENQUEUE_PROPOSED,
+                workIdToPersistAndObserve = proposedWorkId
+            )
+        }
     }
 }

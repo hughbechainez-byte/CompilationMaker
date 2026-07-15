@@ -107,6 +107,60 @@ internal object ConfirmationTimeoutPolicy {
             .coerceIn(CANDIDATE_MIN_MS, CANDIDATE_CAP_MS)
 }
 
+internal fun interface MonotonicTimeSource {
+    fun nowMs(): Long
+}
+
+internal data class ConfirmationDeadlineSnapshot(
+    val globalStartMs: Long,
+    val globalDeadlineMs: Long,
+    val localStartMs: Long,
+    val localDeadlineMs: Long,
+    val localBudgetMs: Long,
+    val remainingGlobalMs: Long,
+    val elapsedGlobalMs: Long,
+    val elapsedLocalMs: Long,
+    val localExpired: Boolean,
+    val globalExpired: Boolean
+)
+
+internal fun propagatedConfirmationTimeoutSource(snapshot: ConfirmationDeadlineSnapshot): String = when {
+    snapshot.localExpired -> "candidate_local"
+    snapshot.globalExpired -> "global_timeout"
+    else -> "nested_timeout_propagated"
+}
+
+/** Pure deadline accounting so nested operation timeouts cannot masquerade as candidate expiry. */
+internal class ConfirmationDeadlineTracker(
+    private val globalStartMs: Long,
+    globalBudgetMs: Long,
+    private val localStartMs: Long,
+    private val localBudgetMs: Long,
+    private val clock: MonotonicTimeSource
+) {
+    private val globalDeadlineMs = saturatingAdd(globalStartMs, globalBudgetMs.coerceAtLeast(0L))
+    private val localDeadlineMs = saturatingAdd(localStartMs, localBudgetMs.coerceAtLeast(0L))
+
+    fun snapshot(): ConfirmationDeadlineSnapshot {
+        val nowMs = clock.nowMs()
+        return ConfirmationDeadlineSnapshot(
+            globalStartMs = globalStartMs,
+            globalDeadlineMs = globalDeadlineMs,
+            localStartMs = localStartMs,
+            localDeadlineMs = localDeadlineMs,
+            localBudgetMs = localBudgetMs,
+            remainingGlobalMs = (globalDeadlineMs - nowMs).coerceAtLeast(0L),
+            elapsedGlobalMs = (nowMs - globalStartMs).coerceAtLeast(0L),
+            elapsedLocalMs = (nowMs - localStartMs).coerceAtLeast(0L),
+            localExpired = nowMs >= localDeadlineMs,
+            globalExpired = nowMs >= globalDeadlineMs
+        )
+    }
+
+    private fun saturatingAdd(left: Long, right: Long): Long =
+        if (right > Long.MAX_VALUE - left) Long.MAX_VALUE else left + right
+}
+
 internal object OcrPreparationPolicy {
     const val MIN_RECOGNITION_SIDE_PX = 128
     const val MAX_RECOGNITION_SIDE_PX = 512

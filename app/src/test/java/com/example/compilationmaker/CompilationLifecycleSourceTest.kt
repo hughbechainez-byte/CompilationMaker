@@ -12,7 +12,7 @@ class CompilationLifecycleSourceTest {
     ).first(File::isDirectory)
 
     @Test
-    fun activityLifecycleNeverCancelsOrDeletesActiveWorkerOutput() {
+    fun activityLifecycleNeverCancelsOrDeletesActiveWorkerOutputAndReplaceIsStaleOnly() {
         val source = sourceRoot.resolve("MainActivity.kt").readText()
         val onDestroy = source.substringAfter("override fun onDestroy()").substringBefore("private fun setUpUi")
 
@@ -20,7 +20,8 @@ class CompilationLifecycleSourceTest {
         assertFalse(source.contains("cancelUniqueWork"))
         assertFalse(onDestroy.contains("delete()"))
         assertTrue(source.contains("ExistingWorkPolicy.KEEP"))
-        assertFalse(source.contains("ExistingWorkPolicy.REPLACE"))
+        assertTrue(source.contains("replaceStaleWork"))
+        assertTrue(source.contains("if (replaceStaleWork) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP"))
     }
 
     @Test

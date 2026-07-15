@@ -2,6 +2,7 @@ package com.example.compilationmaker
 
 internal enum class PipelineTerminalKind {
     SUCCESS,
+    PROVISIONAL_SUCCESS,
     FAILURE,
     RETRY,
     CANCELLED,
@@ -62,7 +63,8 @@ internal fun decidePipelineTerminalOutcome(
     clipCount: Int,
     output: OutputVerificationEvidence?,
     failure: PipelineStageFailure? = null,
-    userCancelled: Boolean = false
+    userCancelled: Boolean = false,
+    provisional: Boolean = false
 ): PipelineTerminalDecision {
     if (userCancelled) {
         return PipelineTerminalDecision(
@@ -109,9 +111,9 @@ internal fun decidePipelineTerminalOutcome(
 
     checkNotNull(output)
     return PipelineTerminalDecision(
-        kind = PipelineTerminalKind.SUCCESS,
+        kind = if (provisional) PipelineTerminalKind.PROVISIONAL_SUCCESS else PipelineTerminalKind.SUCCESS,
         stage = PipelineTerminalStage.VERIFYING,
-        message = "Compilation complete",
+        message = if (provisional) "Provisional preview ready" else "Compilation complete",
         outputUri = output.uri,
         outputSizeBytes = output.sizeBytes,
         outputDurationMs = output.durationMs

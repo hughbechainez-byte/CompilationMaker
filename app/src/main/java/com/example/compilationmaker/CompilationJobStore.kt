@@ -19,6 +19,7 @@ enum class CompilationPipelineState {
     EXPORTING,
     VERIFYING,
     SUCCEEDED,
+    PROVISIONAL_SUCCEEDED,
     FAILED,
     CANCELLED,
     NO_RESULTS;
@@ -36,7 +37,13 @@ enum class CompilationPipelineState {
         )
 
     val isTerminal: Boolean
-        get() = this in setOf(SUCCEEDED, FAILED, CANCELLED, NO_RESULTS)
+        get() = this in setOf(SUCCEEDED, PROVISIONAL_SUCCEEDED, FAILED, CANCELLED, NO_RESULTS)
+}
+
+enum class CompilationPreviewClassification {
+    NONE,
+    CONFIRMED,
+    PROVISIONAL
 }
 
 data class CompilationJobSettings(
@@ -96,13 +103,27 @@ data class CompilationJobRecord(
     val candidateCount: Int = 0,
     val clipCount: Int = 0,
     val previewAvailable: Boolean = false,
+    val sourcePermissionPersisted: Boolean = false,
+    val sourceDurationMs: Long = 0L,
+    val completedCheckpointCount: Int = 0,
+    val recursiveProbeCount: Int = 0,
+    val semanticLeafCount: Int = 0,
+    val confirmedTransitionCount: Int = 0,
+    val provisionalTransitionCount: Int = 0,
+    val rejectedTransitionCount: Int = 0,
+    val scanReportPath: String = "",
+    val clipPlanJson: String = "",
+    val previewClassification: CompilationPreviewClassification = CompilationPreviewClassification.NONE,
+    val fallbackUsed: Boolean = false,
+    val fallbackReason: String = "",
+    val lastSuccessfulStage: String = "",
     val errorStage: String = "",
     val errorType: String = "",
     val errorMessage: String = "",
     val settings: CompilationJobSettings = CompilationJobSettings()
 ) {
     internal fun toJson(): JSONObject = JSONObject().apply {
-        put("schemaVersion", 1)
+        put("schemaVersion", CURRENT_SCHEMA_VERSION)
         put("workId", workId)
         put("uniqueWorkName", uniqueWorkName)
         put("sourceUri", sourceUri)
@@ -121,6 +142,20 @@ data class CompilationJobRecord(
         put("candidateCount", candidateCount)
         put("clipCount", clipCount)
         put("previewAvailable", previewAvailable)
+        put("sourcePermissionPersisted", sourcePermissionPersisted)
+        put("sourceDurationMs", sourceDurationMs)
+        put("completedCheckpointCount", completedCheckpointCount)
+        put("recursiveProbeCount", recursiveProbeCount)
+        put("semanticLeafCount", semanticLeafCount)
+        put("confirmedTransitionCount", confirmedTransitionCount)
+        put("provisionalTransitionCount", provisionalTransitionCount)
+        put("rejectedTransitionCount", rejectedTransitionCount)
+        put("scanReportPath", scanReportPath)
+        put("clipPlanJson", clipPlanJson)
+        put("previewClassification", previewClassification.name)
+        put("fallbackUsed", fallbackUsed)
+        put("fallbackReason", fallbackReason)
+        put("lastSuccessfulStage", lastSuccessfulStage)
         put("errorStage", errorStage)
         put("errorType", errorType)
         put("errorMessage", errorMessage)
@@ -152,12 +187,32 @@ data class CompilationJobRecord(
                 candidateCount = json.optInt("candidateCount", 0),
                 clipCount = json.optInt("clipCount", 0),
                 previewAvailable = json.optBoolean("previewAvailable", false),
+                sourcePermissionPersisted = json.optBoolean("sourcePermissionPersisted", false),
+                sourceDurationMs = json.optLong("sourceDurationMs", 0L),
+                completedCheckpointCount = json.optInt("completedCheckpointCount", 0),
+                recursiveProbeCount = json.optInt("recursiveProbeCount", 0),
+                semanticLeafCount = json.optInt("semanticLeafCount", 0),
+                confirmedTransitionCount = json.optInt("confirmedTransitionCount", 0),
+                provisionalTransitionCount = json.optInt("provisionalTransitionCount", 0),
+                rejectedTransitionCount = json.optInt("rejectedTransitionCount", 0),
+                scanReportPath = json.optString("scanReportPath", ""),
+                clipPlanJson = json.optString("clipPlanJson", ""),
+                previewClassification = runCatching {
+                    CompilationPreviewClassification.valueOf(
+                        json.optString("previewClassification", CompilationPreviewClassification.NONE.name)
+                    )
+                }.getOrDefault(CompilationPreviewClassification.NONE),
+                fallbackUsed = json.optBoolean("fallbackUsed", false),
+                fallbackReason = json.optString("fallbackReason", ""),
+                lastSuccessfulStage = json.optString("lastSuccessfulStage", ""),
                 errorStage = json.optString("errorStage", ""),
                 errorType = json.optString("errorType", ""),
                 errorMessage = json.optString("errorMessage", ""),
                 settings = CompilationJobSettings.fromJson(json.optJSONObject("settings"))
             )
         }
+
+        private const val CURRENT_SCHEMA_VERSION = 2
     }
 }
 
@@ -171,6 +226,9 @@ object CompilationJobContract {
     const val KEY_OUTPUT_DURATION_MS = "outputDurationMs"
     const val KEY_ERROR_STAGE = "errorStage"
     const val KEY_ERROR_TYPE = "errorType"
+    const val KEY_PREVIEW_CLASSIFICATION = "previewClassification"
+    const val KEY_CONFIRMED_TRANSITION_COUNT = "confirmedTransitionCount"
+    const val KEY_PROVISIONAL_TRANSITION_COUNT = "provisionalTransitionCount"
 }
 
 class CompilationJobStore(context: Context) {
@@ -216,7 +274,9 @@ class CompilationJobStore(context: Context) {
         } else {
             editor.remove(LEGACY_ACTIVE_WORK_ID)
         }
-        if (record.state == CompilationPipelineState.SUCCEEDED) {
+        if (record.state == CompilationPipelineState.SUCCEEDED ||
+            record.state == CompilationPipelineState.PROVISIONAL_SUCCEEDED
+        ) {
             editor.putString(KEY_LAST_SUCCESS_JSON, record.toJson().toString())
         }
         return editor.commit()
@@ -290,6 +350,8 @@ internal fun pipelineStateForProgressPhase(
         "no_results", "no result", "no results" -> CompilationPipelineState.NO_RESULTS
         "cancelled", "canceled" -> CompilationPipelineState.CANCELLED
         "failed", "error" -> CompilationPipelineState.FAILED
+        "provisional_completed", "provisional success", "provisional preview ready" ->
+            CompilationPipelineState.PROVISIONAL_SUCCEEDED
         "completed", "success" -> CompilationPipelineState.SUCCEEDED
         "verify", "verify output", "verifying" -> CompilationPipelineState.VERIFYING
         "export", "muxing final output" -> CompilationPipelineState.EXPORTING

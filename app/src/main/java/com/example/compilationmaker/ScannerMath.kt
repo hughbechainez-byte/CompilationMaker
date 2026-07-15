@@ -292,6 +292,155 @@ fun buildRequestedSegment(
     )
 }
 
+/** Builds the semantic clip plan without UI-style padding or arbitrary gap merging. */
+fun planExactTransitionSegments(
+    boundariesMs: List<Long>,
+    durationMs: Long,
+    preRollMs: Long = 10_000L,
+    postRollMs: Long = 30_000L
+): List<SegmentWindow> = mergeSegmentWindows(
+    boundariesMs.map { boundaryMs ->
+        buildRequestedSegment(boundaryMs, durationMs, preRollMs, postRollMs)
+    },
+    maxGapMs = 0L
+)
+
+fun expectedCompilationDurationMs(segments: List<SegmentWindow>): Long =
+    segments.sumOf { segment -> (segment.endMs - segment.startMs).coerceAtLeast(0L) }
+
+enum class TransitionPlanClassification {
+    CONFIRMED,
+    PROVISIONAL_HIGH,
+    PROVISIONAL_MEDIUM,
+    REJECTED,
+    INCONCLUSIVE
+}
+
+data class ProvisionalTransitionEvidence(
+    val timestampMs: Long,
+    val visualScore: Float,
+    val fromNumber: Int? = null,
+    val toNumber: Int? = null,
+    val fromStateStable: Boolean = false,
+    val toStateStable: Boolean = false,
+    val partialEvidence: Boolean = false,
+    val timeoutCount: Int = 0,
+    val reason: String = ""
+)
+
+data class PlannedTransitionPoint(
+    val timestampMs: Long,
+    val classification: TransitionPlanClassification,
+    val confidence: Float,
+    val visualScore: Float,
+    val reason: String
+)
+
+fun classifyProvisionalTransition(evidence: ProvisionalTransitionEvidence): PlannedTransitionPoint? {
+    if (evidence.timestampMs < 0L || !evidence.visualScore.isFinite() || evidence.visualScore <= 0f) return null
+    val semantic = if (evidence.fromStateStable && evidence.toStateStable) {
+        classifyTransition(evidence.fromNumber, evidence.toNumber)
+    } else {
+        null
+    }
+    if (semantic != null && !semantic.sequential) return null
+    val classification = if (semantic?.sequential == true) {
+        TransitionPlanClassification.PROVISIONAL_HIGH
+    } else {
+        TransitionPlanClassification.PROVISIONAL_MEDIUM
+    }
+    val confidence = when (classification) {
+        TransitionPlanClassification.PROVISIONAL_HIGH -> if (evidence.partialEvidence) 0.82f else 0.76f
+        TransitionPlanClassification.PROVISIONAL_MEDIUM -> if (evidence.partialEvidence) 0.62f else 0.52f
+        else -> 0f
+    }
+    val detail = buildList {
+        add(evidence.reason.ifBlank { "retained visual candidate" })
+        semantic?.label?.let { add("state=$it") }
+        if (evidence.timeoutCount > 0) add("innerTimeouts=${evidence.timeoutCount}")
+        if (evidence.partialEvidence) add("partialEvidence=true")
+    }.joinToString("; ")
+    return PlannedTransitionPoint(
+        timestampMs = evidence.timestampMs,
+        classification = classification,
+        confidence = confidence,
+        visualScore = evidence.visualScore,
+        reason = detail
+    )
+}
+
+/**
+ * Confirmed marks always win. High-confidence provisional marks may supplement them; medium
+ * visual marks are used only when strict confirmation produced no preview at all.
+ */
+fun selectTransitionPlanPoints(
+    confirmedTimestampsMs: List<Long>,
+    provisionalEvidence: List<ProvisionalTransitionEvidence>,
+    dedupeToleranceMs: Long
+): List<PlannedTransitionPoint> {
+    val confirmed = confirmedTimestampsMs.map { timestampMs ->
+        PlannedTransitionPoint(
+            timestampMs = timestampMs,
+            classification = TransitionPlanClassification.CONFIRMED,
+            confidence = 1f,
+            visualScore = Float.POSITIVE_INFINITY,
+            reason = "strict semantic confirmation"
+        )
+    }
+    val provisional = provisionalEvidence.mapNotNull(::classifyProvisionalTransition)
+        .filter { point ->
+            confirmed.isEmpty() || point.classification == TransitionPlanClassification.PROVISIONAL_HIGH
+        }
+    val priority = mapOf(
+        TransitionPlanClassification.CONFIRMED to 3,
+        TransitionPlanClassification.PROVISIONAL_HIGH to 2,
+        TransitionPlanClassification.PROVISIONAL_MEDIUM to 1
+    )
+    val selected = ArrayList<PlannedTransitionPoint>()
+    (confirmed + provisional)
+        .sortedWith(
+            compareByDescending<PlannedTransitionPoint> { priority[it.classification] ?: 0 }
+                .thenByDescending { it.visualScore }
+                .thenBy { it.timestampMs }
+        )
+        .forEach { candidate ->
+            if (selected.none { existing ->
+                    kotlin.math.abs(existing.timestampMs - candidate.timestampMs) <= dedupeToleranceMs.coerceAtLeast(0L)
+                }
+            ) {
+                selected += candidate
+            }
+        }
+    return selected.sortedBy { it.timestampMs }
+}
+
+data class TransitionPlanSelection(
+    val points: List<PlannedTransitionPoint>,
+    val baselineFallbackUsed: Boolean
+)
+
+fun selectTransitionPlanWithBaselineFallback(
+    confirmedTimestampsMs: List<Long>,
+    refinedEvidence: List<ProvisionalTransitionEvidence>,
+    baselineEvidence: List<ProvisionalTransitionEvidence>,
+    dedupeToleranceMs: Long
+): TransitionPlanSelection {
+    val primary = selectTransitionPlanPoints(
+        confirmedTimestampsMs = confirmedTimestampsMs,
+        provisionalEvidence = refinedEvidence,
+        dedupeToleranceMs = dedupeToleranceMs
+    )
+    if (confirmedTimestampsMs.isNotEmpty() || primary.isNotEmpty()) {
+        return TransitionPlanSelection(primary, baselineFallbackUsed = false)
+    }
+    val baseline = selectTransitionPlanPoints(
+        confirmedTimestampsMs = emptyList(),
+        provisionalEvidence = baselineEvidence,
+        dedupeToleranceMs = dedupeToleranceMs
+    )
+    return TransitionPlanSelection(baseline, baselineFallbackUsed = baseline.isNotEmpty())
+}
+
 fun classifyTransition(before: Int?, after: Int?): TransitionClassification {
     return when {
         after == null -> TransitionClassification(false, false, "unconfirmed")

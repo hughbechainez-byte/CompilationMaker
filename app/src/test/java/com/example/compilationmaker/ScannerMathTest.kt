@@ -53,6 +53,179 @@ class ScannerMathTest {
     }
 
     @Test
+    fun exactPrimaryClipPlanKeepsTenUnpaddedWindowsAndFourHundredSecondDuration() {
+        val boundaries = listOf(
+            30_000L, 75_000L, 255_000L, 855_000L, 975_000L,
+            1_275_000L, 1_395_000L, 1_995_000L, 2_415_000L, 3_560_000L
+        )
+
+        val segments = planExactTransitionSegments(boundaries, 3_600_500L)
+
+        assertEquals(10, segments.size)
+        assertEquals(SegmentWindow(20_000L, 60_000L), segments[0])
+        assertEquals(SegmentWindow(65_000L, 105_000L), segments[1])
+        assertEquals(400_000L, expectedCompilationDurationMs(segments))
+    }
+
+    @Test
+    fun exactClipPlanMergesOnlyOverlapAndStillClampsSourceEdges() {
+        val segments = planExactTransitionSegments(
+            boundariesMs = listOf(5_000L, 25_000L, 95_000L),
+            durationMs = 100_000L
+        )
+
+        assertEquals(
+            listOf(SegmentWindow(0L, 55_000L), SegmentWindow(85_000L, 100_000L)),
+            segments
+        )
+    }
+
+    @Test
+    fun zeroConfirmedStrongVisualEvidenceStillProducesProvisionalClips() {
+        val evidence = listOf(20_000L, 70_000L, 130_000L).mapIndexed { index, timestamp ->
+            ProvisionalTransitionEvidence(
+                timestampMs = timestamp,
+                visualScore = 12f + index,
+                partialEvidence = true,
+                timeoutCount = 1,
+                reason = "simulated inner frame timeout"
+            )
+        }
+
+        val points = selectTransitionPlanPoints(emptyList(), evidence, dedupeToleranceMs = 900L)
+        val clips = planExactTransitionSegments(points.map { it.timestampMs }, durationMs = 180_000L)
+
+        assertEquals(3, points.size)
+        assertTrue(points.all { it.classification == TransitionPlanClassification.PROVISIONAL_MEDIUM })
+        assertTrue(clips.isNotEmpty())
+    }
+
+    @Test
+    fun confirmedAndHighProvisionalPointsDeduplicateWithoutDroppingDistinctEvidence() {
+        val points = selectTransitionPlanPoints(
+            confirmedTimestampsMs = listOf(10_000L),
+            provisionalEvidence = listOf(
+                ProvisionalTransitionEvidence(
+                    timestampMs = 10_500L,
+                    visualScore = 20f,
+                    fromNumber = 1,
+                    toNumber = 2,
+                    fromStateStable = true,
+                    toStateStable = true
+                ),
+                ProvisionalTransitionEvidence(
+                    timestampMs = 50_000L,
+                    visualScore = 18f,
+                    fromNumber = 2,
+                    toNumber = 3,
+                    fromStateStable = true,
+                    toStateStable = true,
+                    partialEvidence = true
+                ),
+                ProvisionalTransitionEvidence(timestampMs = 90_000L, visualScore = 30f)
+            ),
+            dedupeToleranceMs = 900L
+        )
+
+        assertEquals(listOf(10_000L, 50_000L), points.map { it.timestampMs })
+        assertEquals(TransitionPlanClassification.CONFIRMED, points[0].classification)
+        assertEquals(TransitionPlanClassification.PROVISIONAL_HIGH, points[1].classification)
+    }
+
+    @Test
+    fun suppliedTwentyOneCheckpointRegressionCannotCollapseNineteenCandidatesToNoResults() {
+        val simulatedCandidates = (0 until 19).map { index ->
+            ProvisionalTransitionEvidence(
+                timestampMs = 30_000L + index * 60_000L,
+                visualScore = 10f + index,
+                partialEvidence = index < 10,
+                timeoutCount = if (index < 10) 1 else 0,
+                reason = "21 checkpoints / 19 candidates / zero strict confirmations"
+            )
+        }
+
+        val selection = selectTransitionPlanWithBaselineFallback(
+            confirmedTimestampsMs = emptyList(),
+            refinedEvidence = emptyList(),
+            baselineEvidence = simulatedCandidates,
+            dedupeToleranceMs = 900L
+        )
+        val points = selection.points
+        val clips = planExactTransitionSegments(points.map { it.timestampMs }, 1_200_000L)
+
+        assertTrue(selection.baselineFallbackUsed)
+        assertEquals(19, points.size)
+        assertTrue(points.all { it.classification == TransitionPlanClassification.PROVISIONAL_MEDIUM })
+        assertTrue(clips.isNotEmpty())
+        assertTrue(expectedCompilationDurationMs(clips) > 0L)
+    }
+
+    @Test
+    fun noCredibleEvidenceProducesNoPlanPoints() {
+        val points = selectTransitionPlanPoints(
+            confirmedTimestampsMs = emptyList(),
+            provisionalEvidence = listOf(
+                ProvisionalTransitionEvidence(timestampMs = -1L, visualScore = 20f),
+                ProvisionalTransitionEvidence(timestampMs = 10_000L, visualScore = 0f)
+            ),
+            dedupeToleranceMs = 900L
+        )
+
+        assertTrue(points.isEmpty())
+    }
+
+    @Test
+    fun stableNonSequentialEvidenceCanNeverBecomeAProvisionalClip() {
+        val points = selectTransitionPlanPoints(
+            confirmedTimestampsMs = emptyList(),
+            provisionalEvidence = listOf(
+                ProvisionalTransitionEvidence(
+                    timestampMs = 20_000L,
+                    visualScore = 100f,
+                    fromNumber = 9,
+                    toNumber = 6,
+                    fromStateStable = true,
+                    toStateStable = true,
+                    partialEvidence = true
+                )
+            ),
+            dedupeToleranceMs = 900L
+        )
+
+        assertTrue(points.isEmpty())
+    }
+
+    @Test
+    fun rejectedRefinedEvidenceCanFallBackToPreservedUnstableVisualCandidates() {
+        val selection = selectTransitionPlanWithBaselineFallback(
+            confirmedTimestampsMs = emptyList(),
+            refinedEvidence = listOf(
+                ProvisionalTransitionEvidence(
+                    timestampMs = 20_000L,
+                    visualScore = 100f,
+                    fromNumber = 9,
+                    toNumber = 6,
+                    fromStateStable = true,
+                    toStateStable = true
+                )
+            ),
+            baselineEvidence = listOf(
+                ProvisionalTransitionEvidence(
+                    timestampMs = 19_500L,
+                    visualScore = 30f,
+                    partialEvidence = true,
+                    reason = "preserved baseline visual peak"
+                )
+            ),
+            dedupeToleranceMs = 900L
+        )
+
+        assertTrue(selection.baselineFallbackUsed)
+        assertEquals(listOf(19_500L), selection.points.map { it.timestampMs })
+        assertEquals(TransitionPlanClassification.PROVISIONAL_MEDIUM, selection.points.single().classification)
+    }
+
+    @Test
     fun sourceDurationDoesNotCollapseToProcessingTime() {
         val resolved = resolveSourceDurationMs(3_600_000L, 12_345L)
         assertEquals(3_600_000L, resolved)
