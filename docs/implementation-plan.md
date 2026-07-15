@@ -1,7 +1,7 @@
 # Compilation Maker Technical Implementation Specification
 
 Status: approved implementation plan; Phase 1 is not yet complete
-Last updated: 2026-07-14
+Last updated: 2026-07-15
 Primary fixture: `compilation test video A.mp4`
 Reference fixture: `compilation test video B.mp4`
 
@@ -570,6 +570,20 @@ Topology correction is evaluated before interval-policy changes. If sequential i
 The fixed 16-second candidate wall deadline is independently known to discard valid work when the Activity is closed. Replace it separately with a bounded OCR-work/progress-aware budget while preserving candidate-local continuation and earlier confirmations. Benchmark and release evidence MUST distinguish timeout-policy effects from topology effects.
 
 Required deterministic coverage includes synthetic/noisy/transformed `6`, `9`, `0`, `7`, `8`, and `10`; broken/open loops, no/multiple/central holes, threshold disagreement, non-`6/9` regression, corrected five-sample voting, ambiguity-versus-null/timeout, actual timestamp retention, complete intervals, unstable-run envelopes, multiple transitions, candidate-local failure continuation, sequential rejection, and persistent-boundary accuracy. Release acceptance requires the exact published APK with Activity closed, foreground service evidence, complete candidate coverage, zero semantic false positives, recall above the equivalent background baseline, no regression below the best six-transition semantic baseline without a documented causal explanation, machine-readable benchmark JSON, and a pre/post comparison report.
+
+### 9.10 Report-safe transition-plan selection
+
+The transition plan is an evidence boundary, not a second recognition pass. Confirmed points MUST
+carry finite report values; classification priority already distinguishes them from provisional
+points, so an infinity sentinel MUST NOT be used for visual score. A candidate that produced a
+strict confirmation MUST NOT be re-added as provisional merely because its coarse seed timestamp
+differs from the refined boundary by more than the normal timestamp dedupe tolerance. The
+orchestrator MUST retain the candidate-index relationship and suppress that duplicate while
+leaving unrelated provisional evidence eligible. The pure selector MUST test this case with a
+seed more than 900 ms from its refined boundary and MUST assert ten points and 400,000 ms for the
+primary schedule. Scan-report JSON MUST guard every serialized floating-point evidence value
+against NaN or infinity so report persistence cannot discard an otherwise valid scan before
+export.
 
 ## 10. Clip planning
 

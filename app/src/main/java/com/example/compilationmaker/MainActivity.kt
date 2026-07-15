@@ -103,6 +103,14 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.system.measureTimeMillis
 
+private fun JSONObject.putFinite(key: String, value: Float, fallback: Float = 0f) {
+    put(key, if (value.isFinite()) value else fallback)
+}
+
+private fun JSONObject.putFiniteNullable(key: String, value: Float?) {
+    put(key, value?.takeIf { it.isFinite() } ?: JSONObject.NULL)
+}
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
@@ -3505,6 +3513,10 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 candidateWindowsForRefine,
                 includeConfirmationEvidence = true
             )
+            val confirmedCandidateIndices = candidateConfirmationEvidence
+                .filter { it.disposition == "confirmed" }
+                .map { it.candidateIndex }
+                .toSet()
             val transitionPlanSelection = selectTransitionPlanWithBaselineFallback(
                 confirmedTimestampsMs = uniqueTransitions,
                 refinedEvidence = provisionalEvidence,
@@ -3512,7 +3524,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     mergedCandidateWindows,
                     includeConfirmationEvidence = false
                 ),
-                dedupeToleranceMs = scanConfig.dedupeMs
+                dedupeToleranceMs = scanConfig.dedupeMs,
+                confirmedCandidateIndices = confirmedCandidateIndices
             )
             val transitionPlanPoints = transitionPlanSelection.points
             val baselineVisualFallbackUsed = transitionPlanSelection.baselineFallbackUsed
@@ -5080,7 +5093,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             put("frameProvider", report.frameProvider)
             put("frameProviderFallbackReason", report.frameProviderFallbackReason)
             put("checkpointIntervalMs", report.checkpointIntervalMs)
-            put("scanSpeedMultiple", report.scanSpeedMultiple)
+            putFinite("scanSpeedMultiple", report.scanSpeedMultiple)
             put("experimentalDownscaleSize", report.experimentalDownscaleSize)
             put("videoDurationMs", report.videoDurationMs)
             put("wallClockScanMs", report.wallClockScanMs)
@@ -5103,7 +5116,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 put("visualSamples", report.metrics.visualSamples)
                 put("ocrCalls", report.metrics.ocrCalls)
                 put("ocrReductionPercent", report.metrics.ocrReductionPercent)
-                put("throughputVideoToWall", report.metrics.throughputVideoToWall)
+                putFinite("throughputVideoToWall", report.metrics.throughputVideoToWall)
                 put("skippedStableMs", report.metrics.skippedStableMs)
                 put("acceptedTransitions", report.metrics.acceptedTransitions)
                 put("rejectedCandidates", report.metrics.rejectedCandidates)
@@ -5118,7 +5131,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                         put("startMs", candidate.startMs)
                         put("endMs", candidate.endMs)
                         put("seedMs", candidate.seedMs)
-                        put("peakScore", candidate.peakScore)
+                        putFinite("peakScore", candidate.peakScore)
                         put("reason", candidate.reason.name)
                         put("sampleCount", candidate.sampleCount)
                     })
@@ -5136,8 +5149,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                         put(JSONObject().apply {
                             put("timestampMs", point.timestampMs)
                             put("classification", point.classification.name)
-                            put("confidence", point.confidence)
-                            put("visualScore", point.visualScore)
+                            putFinite("confidence", point.confidence)
+                            putFinite("visualScore", point.visualScore)
                             put("reason", point.reason)
                         })
                     }
@@ -5197,11 +5210,11 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                         put("eventBoundaryMs", mark.eventBoundaryMs)
                         put("fromNumber", mark.fromNumber)
                         put("toNumber", mark.toNumber)
-                        put("confidence", mark.confidence)
+                        putFinite("confidence", mark.confidence)
                         put("requestedCutStartMs", mark.requestedCutStartMs)
                         put("requestedCutEndMs", mark.requestedCutEndMs)
                         put("candidateReason", mark.candidateReason)
-                        put("candidatePeakScore", mark.candidatePeakScore)
+                        putFinite("candidatePeakScore", mark.candidatePeakScore)
                         put("evidence", JSONArray().apply {
                             mark.evidence.forEach { value -> put(value) }
                         })
@@ -5209,10 +5222,10 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 }
             })
             put("scanWindow", JSONObject().apply {
-                put("xPercent", report.scanWindow.xPercent)
-                put("yPercent", report.scanWindow.yPercent)
-                put("widthPercent", report.scanWindow.widthPercent)
-                put("heightPercent", report.scanWindow.heightPercent)
+                putFinite("xPercent", report.scanWindow.xPercent)
+                putFinite("yPercent", report.scanWindow.yPercent)
+                putFinite("widthPercent", report.scanWindow.widthPercent)
+                putFinite("heightPercent", report.scanWindow.heightPercent)
             })
             put("timing", JSONObject().apply {
                 put("decodeMs", report.timing.decodeMs)
@@ -5249,7 +5262,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     put("number", vote.value ?: JSONObject.NULL)
                     put("status", vote.status)
                     put("mlKitValue", vote.mlKitValue ?: JSONObject.NULL)
-                    put("mlKitConfidence", vote.mlKitConfidence ?: JSONObject.NULL)
+                    putFiniteNullable("mlKitConfidence", vote.mlKitConfidence)
                     put("rawText", vote.rawText)
                     put("preprocessingBranch", vote.preprocessingBranch)
                     put("mlKitStructure", vote.mlKitStructure?.let(::mlKitStructureJson) ?: JSONObject.NULL)
@@ -5276,28 +5289,28 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         put("blockIndex", evidence.blockIndex)
         put("lineIndex", evidence.lineIndex)
         put("matchedElementIndex", evidence.matchedElementIndex ?: JSONObject.NULL)
-        put("lineConfidence", evidence.lineConfidence ?: JSONObject.NULL)
-        put("aggregateConfidence", evidence.aggregateConfidence)
+        putFiniteNullable("lineConfidence", evidence.lineConfidence)
+        putFinite("aggregateConfidence", evidence.aggregateConfidence)
         put("confidenceSource", evidence.confidenceSource)
         put("lineBounds", evidence.lineBounds?.let(::recognitionBoundsJson) ?: JSONObject.NULL)
         put("lineCornerPoints", recognitionPointsJson(evidence.lineCornerPoints))
-        put("lineAngleDegrees", evidence.lineAngleDegrees)
+        putFinite("lineAngleDegrees", evidence.lineAngleDegrees)
         put("elements", JSONArray().apply {
             evidence.elements.forEach { element ->
                 put(JSONObject().apply {
                     put("text", element.text)
-                    put("confidence", element.confidence ?: JSONObject.NULL)
+                    putFiniteNullable("confidence", element.confidence)
                     put("bounds", element.bounds?.let(::recognitionBoundsJson) ?: JSONObject.NULL)
                     put("cornerPoints", recognitionPointsJson(element.cornerPoints))
-                    put("angleDegrees", element.angleDegrees)
+                    putFinite("angleDegrees", element.angleDegrees)
                     put("symbols", JSONArray().apply {
                         element.symbols.forEach { symbol ->
                             put(JSONObject().apply {
                                 put("text", symbol.text)
-                                put("confidence", symbol.confidence ?: JSONObject.NULL)
+                                putFiniteNullable("confidence", symbol.confidence)
                                 put("bounds", symbol.bounds?.let(::recognitionBoundsJson) ?: JSONObject.NULL)
                                 put("cornerPoints", recognitionPointsJson(symbol.cornerPoints))
-                                put("angleDegrees", symbol.angleDegrees)
+                                putFinite("angleDegrees", symbol.angleDegrees)
                             })
                         }
                     })
@@ -5326,8 +5339,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         put("componentBounds", evidence.componentBounds?.let(::rectLikeJson) ?: JSONObject.NULL)
         put("holeCount", evidence.holeCount)
         put("dominantHoleArea", evidence.dominantHoleArea)
-        put("dominantHoleCentroidYNormalized", evidence.dominantHoleCentroidYNormalized ?: JSONObject.NULL)
-        put("confidence", evidence.confidence)
+        putFiniteNullable("dominantHoleCentroidYNormalized", evidence.dominantHoleCentroidYNormalized)
+        putFinite("confidence", evidence.confidence)
         put("reason", evidence.reason)
         put("variants", JSONArray().apply {
             evidence.variants.forEach { variant ->
@@ -5340,8 +5353,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     put("componentBounds", variant.componentBounds?.let(::rectLikeJson) ?: JSONObject.NULL)
                     put("holeCount", variant.holeCount)
                     put("dominantHoleArea", variant.dominantHoleArea)
-                    put("dominantHoleCentroidYNormalized", variant.dominantHoleCentroidYNormalized ?: JSONObject.NULL)
-                    put("confidence", variant.confidence)
+                    putFiniteNullable("dominantHoleCentroidYNormalized", variant.dominantHoleCentroidYNormalized)
+                    putFinite("confidence", variant.confidence)
                     put("structurallyValid", variant.structurallyValid)
                     put("reason", variant.reason)
                 })
