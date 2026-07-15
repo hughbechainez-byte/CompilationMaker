@@ -2692,6 +2692,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             var ocrCalls = 0
             var acceptedTransitions = 0
             var rejectedCandidates = 0
+            var candidateTimeouts = 0
             val transitionMarks = ArrayList<TransitionMark>()
             val checkpointTimeline = ArrayList<CheckpointTimelineEntry>()
             try {
@@ -3078,10 +3079,18 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
             AppLog.i(context, tag, "[finalize] beginning number confirmation thread=${Thread.currentThread().name}")
             for ((index, candidate) in candidateWindowsForRefine.withIndex()) {
                 currentCoroutineContext().ensureActive()
+                val isCheckpointInterval = frameStepMs >= 60_000L &&
+                    candidate.fromStateStable && candidate.toStateStable
+                val plannedWorkUnits = if (isCheckpointInterval) {
+                    ConfirmationTimeoutPolicy.CHECKPOINT_BOUNDARY_WORK_UNITS
+                } else {
+                    ConfirmationTimeoutPolicy.GENERIC_CANDIDATE_WORK_UNITS
+                }
+                val candidateLimitMs = ConfirmationTimeoutPolicy.candidateMs(plannedWorkUnits)
                 try {
                     // A timeout is evidence about this interval only.  Never let it discard later
                     // semantic intervals that have already been retained by the checkpoint timeline.
-                    withTimeout(ConfirmationTimeoutPolicy.CANDIDATE_MS) {
+                    withTimeout(candidateLimitMs) {
                 val confirmationPercent = 46 + ((index + 1) * 7 / candidateWindowsForRefine.size.coerceAtLeast(1))
                 progress(CompilationPipelineState.REFINING, "Confirming transition ${index + 1} of ${candidateWindowsForRefine.size}", confirmationPercent)
                 val candidateStart = max(0L, candidate.startMs)
@@ -3089,9 +3098,6 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 val sampleStart = max(0L, candidateStart - scanConfig.prefirstProbeMs)
                 val sampleEnd = min(durationMs, candidateEnd + scanConfig.prefirstProbeMs)
                 val centerMs = candidate.seedMs.coerceIn(sampleStart, sampleEnd)
-                val isCheckpointInterval = frameStepMs >= 60_000L &&
-                    candidate.fromStateStable && candidate.toStateStable
-
                 if (isCheckpointInterval && candidate.fromStateStable && candidate.toStateStable) {
                     val semantic = classifyTransition(candidate.fromNumber, candidate.toNumber)
                     if (!semantic.accepted || !semantic.sequential) {
@@ -3262,8 +3268,9 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 )
                     }
                 } catch (timeout: TimeoutCancellationException) {
+                    candidateTimeouts++
                     rejectedCandidates++
-                    AppLog.w(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=unconfirmed-timeout scope=candidate limitMs=${ConfirmationTimeoutPolicy.CANDIDATE_MS}; continuing with later intervals and preserving ${confirmedLedger.size} confirmations")
+                    AppLog.w(context, tag, "[ocr candidate] index=$index timestamp=${candidate.seedMs} disposition=unconfirmed-timeout scope=candidate limitMs=$candidateLimitMs plannedWorkUnits=$plannedWorkUnits; continuing with later intervals and preserving ${confirmedLedger.size} confirmations")
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (failure: Exception) {
@@ -3367,7 +3374,8 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                     throughputVideoToWall = throughput,
                     skippedStableMs = skippedStableMs,
                     acceptedTransitions = acceptedTransitions,
-                    rejectedCandidates = rejectedCandidates
+                    rejectedCandidates = rejectedCandidates,
+                    candidateTimeouts = candidateTimeouts
                 ),
                 transitionMarks = transitionMarks,
                 candidates = candidateWindows,
@@ -4690,6 +4698,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
                 put("skippedStableMs", report.metrics.skippedStableMs)
                 put("acceptedTransitions", report.metrics.acceptedTransitions)
                 put("rejectedCandidates", report.metrics.rejectedCandidates)
+                put("candidateTimeouts", report.metrics.candidateTimeouts)
                 put("scanRate20xGateMet", report.metrics.throughputVideoToWall >= 20f)
                 put("scanRate30xGateMet", report.metrics.throughputVideoToWall >= 30f)
                 put("ocrReductionGateMet", report.metrics.ocrReductionPercent >= 90)
@@ -5223,7 +5232,8 @@ data class ScanMetrics(
     val throughputVideoToWall: Float,
     val skippedStableMs: Long,
     val acceptedTransitions: Int,
-    val rejectedCandidates: Int
+    val rejectedCandidates: Int,
+    val candidateTimeouts: Int = 0
 ) {
     companion object {
         fun empty(): ScanMetrics = ScanMetrics(
@@ -5236,7 +5246,8 @@ data class ScanMetrics(
             throughputVideoToWall = 0f,
             skippedStableMs = 0L,
             acceptedTransitions = 0,
-            rejectedCandidates = 0
+            rejectedCandidates = 0,
+            candidateTimeouts = 0
         )
     }
 }

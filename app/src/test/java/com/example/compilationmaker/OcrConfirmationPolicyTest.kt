@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.random.Random
 
 class OcrConfirmationPolicyTest {
     @Test
@@ -13,6 +14,23 @@ class OcrConfirmationPolicyTest {
         assertEquals(
             ConfirmationTimeoutPolicy.OVERALL_CAP_MS,
             ConfirmationTimeoutPolicy.overallMs(10_000)
+        )
+    }
+
+    @Test
+    fun candidateDeadlineScalesWithBoundedOcrWorkInsteadOfForegroundSpeed() {
+        val generic = ConfirmationTimeoutPolicy.candidateMs(
+            ConfirmationTimeoutPolicy.GENERIC_CANDIDATE_WORK_UNITS
+        )
+        val checkpoint = ConfirmationTimeoutPolicy.candidateMs(
+            ConfirmationTimeoutPolicy.CHECKPOINT_BOUNDARY_WORK_UNITS
+        )
+
+        assertTrue(checkpoint > 16_000L)
+        assertTrue(checkpoint > generic)
+        assertEquals(
+            ConfirmationTimeoutPolicy.CANDIDATE_CAP_MS,
+            ConfirmationTimeoutPolicy.candidateMs(Int.MAX_VALUE)
         )
     }
 
@@ -188,5 +206,37 @@ class OcrConfirmationPolicyTest {
 
         assertTrue(result.samples <= 11)
         assertTrue(result.timeMs in 30_000L..30_250L)
+    }
+
+    @Test
+    fun randomizedSyntheticTimelinesRecoverSequentialStateChanges() = runBlocking {
+        val random = Random(17_023)
+        repeat(40) {
+            val boundaries = (1..3)
+                .map { random.nextLong(4_000L, 56_000L) }
+                .sorted()
+                .fold(emptyList<Long>()) { accepted, candidate ->
+                    if (accepted.lastOrNull()?.let { candidate - it < 4_000L } == true) accepted
+                    else accepted + candidate
+                }
+            fun stateAt(timeMs: Long): NumberStatePoint {
+                val value = boundaries.count { timeMs >= it }.takeIf { it > 0 }
+                return NumberStatePoint(timeMs, value, true)
+            }
+
+            val result = investigateStateInterval(
+                left = stateAt(0L),
+                right = stateAt(60_000L),
+                minLeafMs = 500L,
+                maxDepth = 8,
+                maxProbes = 255,
+                sample = { stateAt(it) }
+            )
+
+            assertEquals(boundaries.size, result.intervals.size)
+            result.intervals.zip(boundaries).forEach { (interval, boundary) ->
+                assertTrue(boundary in interval.startMs..interval.endMs)
+            }
+        }
     }
 }

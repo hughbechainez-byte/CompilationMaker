@@ -93,6 +93,7 @@ def main() -> int:
     parser.add_argument("--test-apk", type=Path)
     parser.add_argument("--output-duration-ms", type=int)
     parser.add_argument("--output-size-bytes", type=int)
+    parser.add_argument("--candidate-timeout-count", type=int)
     args = parser.parse_args()
 
     report = load_json(args.report)
@@ -131,6 +132,11 @@ def main() -> int:
         "candidateCount": report.get("candidateWindows"),
         "acceptedTransitionCount": report.get("acceptedTransitions"),
         "rejectedCandidateCount": report.get("rejectedCandidates"),
+        "candidateTimeoutCount": (
+            args.candidate_timeout_count
+            if args.candidate_timeout_count is not None
+            else report.get("metrics", {}).get("candidateTimeouts")
+        ),
         "unresolvedIntervalCount": len(missed),
         "visualSampleCount": report.get("metrics", {}).get("visualSamples"),
         "ocrCallCount": report.get("metrics", {}).get("ocrCalls"),

@@ -58,25 +58,25 @@ class VideoCompilationEndToEndTest {
             onView(withId(R.id.scanSpeedPicker)).perform(scrollTo(), click())
             onData(allOf(instanceOf(String::class.java), `is`("1-minute checkpoints"))).perform(click())
             onView(withId(R.id.processButton)).perform(scrollTo(), click())
-
-            val deadline = SystemClock.elapsedRealtime() + 10 * 60_000L
-            var record: CompilationJobRecord? = null
-            while (SystemClock.elapsedRealtime() < deadline) {
-                record = CompilationJobStore(context).load()
-                if (record?.state?.isTerminal == true) break
-                SystemClock.sleep(1_000L)
-            }
-            val finished = requireNotNull(record)
-            assertEquals(finished.errorMessage, CompilationPipelineState.SUCCEEDED, finished.state)
-            val output = File(finished.outputPath)
-            assertTrue("Expected verified output file", output.isFile)
-            assertTrue("Expected non-empty output", output.length() > 0L)
-            copyLatestScanReport(context)
-            output.copyTo(
-                File("/sdcard/Download/compilation_output_A_${System.currentTimeMillis()}.mp4")
-            )
-            assertEquals("Video A must produce ten clips", 10, finished.clipCount)
         }
+
+        val deadline = SystemClock.elapsedRealtime() + 15 * 60_000L
+        var record: CompilationJobRecord? = null
+        while (SystemClock.elapsedRealtime() < deadline) {
+            record = CompilationJobStore(context).load()
+            if (record?.state?.isTerminal == true) break
+            SystemClock.sleep(1_000L)
+        }
+        val finished = requireNotNull(record)
+        assertEquals(finished.errorMessage, CompilationPipelineState.SUCCEEDED, finished.state)
+        val output = File(finished.outputPath)
+        assertTrue("Expected verified output file", output.isFile)
+        assertTrue("Expected non-empty output", output.length() > 0L)
+        copyLatestScanReport(context)
+        output.copyTo(
+            File("/sdcard/Download/compilation_output_A_${System.currentTimeMillis()}.mp4")
+        )
+        assertEquals("Video A must produce ten clips", 10, finished.clipCount)
     }
 
     @Test

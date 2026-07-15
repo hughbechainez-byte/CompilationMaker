@@ -36,7 +36,12 @@ enum class DigitRecognitionStatus { PARSED, NO_TEXT, NO_VALID_INTEGER, TIMEOUT, 
 internal object ConfirmationTimeoutPolicy {
     const val FRAME_EXTRACTION_MS = 3_000L
     const val OCR_ATTEMPT_MS = 3_500L
-    const val CANDIDATE_MS = 16_000L
+    const val CANDIDATE_MIN_MS = 16_000L
+    const val CANDIDATE_BASE_MS = 6_000L
+    const val CANDIDATE_PER_WORK_UNIT_MS = 3_000L
+    const val CANDIDATE_CAP_MS = 48_000L
+    const val CHECKPOINT_BOUNDARY_WORK_UNITS = 11
+    const val GENERIC_CANDIDATE_WORK_UNITS = 5
     const val OVERALL_BASE_MS = 8_000L
     const val OVERALL_PER_CANDIDATE_MS = 11_000L
     const val OVERALL_CAP_MS = 180_000L
@@ -44,6 +49,11 @@ internal object ConfirmationTimeoutPolicy {
     fun overallMs(candidateCount: Int): Long =
         (OVERALL_BASE_MS + candidateCount.coerceAtLeast(0) * OVERALL_PER_CANDIDATE_MS)
             .coerceAtMost(OVERALL_CAP_MS)
+
+    /** Wall guard scales with bounded OCR work instead of assuming foreground CPU speed. */
+    fun candidateMs(plannedWorkUnits: Int): Long =
+        (CANDIDATE_BASE_MS + plannedWorkUnits.coerceAtLeast(0) * CANDIDATE_PER_WORK_UNIT_MS)
+            .coerceIn(CANDIDATE_MIN_MS, CANDIDATE_CAP_MS)
 }
 
 internal object OcrPreparationPolicy {
