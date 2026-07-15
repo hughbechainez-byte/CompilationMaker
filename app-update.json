@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.25",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.25",
+  "version": "v0.17.26",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.26",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.25/CompilationMaker-v0.17.25.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.26/CompilationMaker-v0.17.26.apk"
   },
-  "notes": "Test build: separates 3-second frame/OCR operation timeouts from candidate deadlines, preserves a labeled provisional preview when strict confirmation is inconclusive, persists the exact clip plan, and replaces padded sync-sample muxing with Media3 exact-boundary export. Post-release API 35 QA remains required before this iteration is accepted.",
+  "notes": "Test build: makes transition-plan evidence report-safe, suppresses confirmed-candidate provisional duplicates, and preserves the topology/state-timeline scanner while exact post-release API 35 QA continues.",
   "updates": [
+    {
+      "version": "v0.17.26",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.26",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.26/CompilationMaker-v0.17.26.apk",
+      "notes": "Test build: makes transition-plan evidence report-safe, suppresses confirmed-candidate provisional duplicates, and preserves the topology/state-timeline scanner while exact post-release API 35 QA continues."
+    },
     {
       "version": "v0.17.25",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.25",
