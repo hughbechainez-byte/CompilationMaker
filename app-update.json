@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.27",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.27",
+  "version": "v0.17.28",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.28",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.27/app-release.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.28/CompilationMaker-v0.17.28.apk"
   },
-  "notes": "## Canonical scanner consolidation\n\n- Makes the verified `number-change-detector` v0.6.1 PTS-aware scanner the single production scan path.\n- Adds canonical Fast, Balanced, Precise, Monotonic Turbo, and Quick PTS profiles while retaining exact Media3 clip export.\n- Video A API 35 QA: 10 confirmed transitions, ten clips, 400-second output, and 159.804 seconds end-to-end (197.476 seconds faster than v0.17.26).",
+  "notes": "## Faster exact exports\n\n- Keeps exact H.264 visual clip boundaries while copying compatible AAC samples instead of re-encoding them.\n- Video A API 35 QA: 10 confirmed transitions, ten clips, a 400-second output, and 89.011 seconds end-to-end (70.793 seconds faster than v0.17.27).",
   "updates": [
+    {
+      "version": "v0.17.28",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.28",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.28/CompilationMaker-v0.17.28.apk",
+      "notes": "## Faster exact exports\n\n- Keeps exact H.264 visual clip boundaries while copying compatible AAC samples instead of re-encoding them.\n- Video A API 35 QA: 10 confirmed transitions, ten clips, a 400-second output, and 89.011 seconds end-to-end (70.793 seconds faster than v0.17.27)."
+    },
     {
       "version": "v0.17.27",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.27",
