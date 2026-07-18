@@ -1,46 +1,52 @@
 {
-  "version": "v0.17.26",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.26",
+  "version": "v0.17.27",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.27",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.26/CompilationMaker-v0.17.26.apk"
+    "url": ""
   },
-  "notes": "Test build: makes transition-plan evidence report-safe, suppresses confirmed-candidate provisional duplicates, and preserves the topology/state-timeline scanner while exact post-release API 35 QA continues.",
+  "notes": "## Canonical scanner consolidation\n\n- Makes the verified `number-change-detector` v0.6.1 PTS-aware scanner the single production scan path.\n- Adds canonical Fast, Balanced, Precise, Monotonic Turbo, and Quick PTS profiles while retaining exact Media3 clip export.\n- Video A API 35 QA: 10 confirmed transitions, ten clips, 400-second output, and 159.804 seconds end-to-end (197.476 seconds faster than v0.17.26).",
   "updates": [
+    {
+      "version": "v0.17.27",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.27",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.27/app-release.apk",
+      "notes": "## Canonical scanner consolidation\n\n- Makes the verified `number-change-detector` v0.6.1 PTS-aware scanner the single production scan path.\n- Adds canonical Fast, Balanced, Precise, Monotonic Turbo, and Quick PTS profiles while retaining exact Media3 clip export.\n- Video A API 35 QA: 10 confirmed transitions, ten clips, 400-second output, and 159.804 seconds end-to-end (197.476 seconds faster than v0.17.26)."
+    },
     {
       "version": "v0.17.26",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.26",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.26/CompilationMaker-v0.17.26.apk",
-      "notes": "Test build: makes transition-plan evidence report-safe, suppresses confirmed-candidate provisional duplicates, and preserves the topology/state-timeline scanner while exact post-release API 35 QA continues."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.25...v0.17.26"
     },
     {
       "version": "v0.17.25",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.25",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.25/CompilationMaker-v0.17.25.apk",
-      "notes": "Test build: separates 3-second frame/OCR operation timeouts from candidate deadlines, preserves a labeled provisional preview when strict confirmation is inconclusive, persists the exact clip plan, and replaces padded sync-sample muxing with Media3 exact-boundary export. Post-release API 35 QA remains required before this iteration is accepted."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.24...v0.17.25"
     },
     {
       "version": "v0.17.24",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.24",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.24/CompilationMaker-v0.17.24.apk",
-      "notes": "Test build: adds confidence-preserving ML Kit evidence and conservative 6/9 glyph-topology adjudication. Exact API 35 Activity-closed QA reached 10/10 semantic transitions with zero false positives or timeouts; clip planning/export remains in progress because Gradual padding merged the first two windows and produced a 473.059-second output."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.23...v0.17.24"
     },
     {
       "version": "v0.17.23",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.23",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.23/CompilationMaker-v0.17.23.apk",
-      "notes": "Test build: replaces the background-sensitive fixed candidate timeout with a bounded OCR-work-scaled guard. Exact API 35 background QA reached 70% transition recall with zero candidate timeouts; topology work remains in progress."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.22...v0.17.23"
     },
     {
       "version": "v0.17.22",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.22",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.22/CompilationMaker-v0.17.22.apk",
-      "notes": "Test build: added bounded first-state refinement and Activity-closed QA coverage. Retained for rollback; fixed candidate deadlines caused a background semantic regression."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.21...v0.17.22"
     },
     {
       "version": "v0.17.21",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.21",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.21/CompilationMaker-v0.17.21.apk",
-      "notes": "Test build: caps production semantic interval recursion at three stable-state probes while retaining deep deterministic recursion coverage. Phase 1 fixture validation remains in progress."
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.21/app-release.apk",
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.20...v0.17.21"
     },
     {
       "version": "v0.17.20",
@@ -119,42 +125,6 @@
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.8",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.8/CompilationMaker-v0.17.8.apk",
       "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.7...v0.17.8"
-    },
-    {
-      "version": "v0.17.7",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.7",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.7/CompilationMaker-v0.17.7.apk",
-      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.6...v0.17.7"
-    },
-    {
-      "version": "v0.17.6",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.6",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.6/CompilationMaker-v0.17.6.apk",
-      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.5...v0.17.6"
-    },
-    {
-      "version": "v0.17.5",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.5",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.5/CompilationMaker-v0.17.5.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.4...v0.17.5"
-    },
-    {
-      "version": "v0.17.4",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.4",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.4/CompilationMaker-v0.17.4.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.3...v0.17.4"
-    },
-    {
-      "version": "v0.17.3",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.3",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.3/CompilationMaker-v0.17.3.apk",
-      "notes": "## What's new\n\n- Fixed the Android 15 `InvalidForegroundServiceTypeException` crash by using typed WorkManager foreground execution.\n- Restored visible 3-minute, 1-minute, and 5-minute checkpoint scan options.\n- Kept Fast change-map (500 ms) as the default scan option.\n- Preserved the existing ROI, change-map, checkpoint, clip, decoder, and export pipeline behavior.\n\n**Full changelog:** https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.2...v0.17.3"
-    },
-    {
-      "version": "v0.17.2",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.2",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.2/CompilationMaker-v0.17.2.apk",
-      "notes": "**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.1...v0.17.2"
     }
   ]
 }
