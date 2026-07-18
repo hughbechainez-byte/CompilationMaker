@@ -21,16 +21,26 @@ jobs:
 
       - name: Determine latest APK asset
         id: discover
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ github.event.release.tag_name }}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          RAW_ASSETS='${{ toJson(github.event.release.assets) }}'
-          APK_URL="$(printf '%s' "$RAW_ASSETS" | jq -r '.[] | select(((.name|test("\\.apk$"; "i")) or (.content_type=="application/vnd.android.package-archive")) and (.browser_download_url != null) | .browser_download_url' | head -n 1)"
-          if [ -z "$APK_URL" ] || [ "$APK_URL" = "null" ]; then
-            APK_URL="$(printf '%s' "$RAW_ASSETS" | jq -r '.[] | select(.name | test("CompilationMaker"; "i")) | .browser_download_url' | head -n 1)"
-          fi
-          echo "apk_url=$APK_URL" >> "$GITHUB_OUTPUT"
+          APK_URL=""
           RELEASE_URL="${{ github.event.release.html_url }}"
+          for attempt in $(seq 1 12); do
+            RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")"
+            APK_URL="$(printf '%s' "$RELEASE_JSON" | jq -r '.assets[] | select(((.name|test("\\.apk$"; "i")) or (.content_type=="application/vnd.android.package-archive")) and (.browser_download_url != null) | .browser_download_url' | head -n 1)"
+            if [ -z "$APK_URL" ] || [ "$APK_URL" = "null" ]; then
+              APK_URL="$(printf '%s' "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("CompilationMaker"; "i")) | .browser_download_url' | head -n 1)"
+            fi
+            RELEASE_URL="$(printf '%s' "$RELEASE_JSON" | jq -r '.html_url // empty')"
+            if [ -n "$APK_URL" ] && [ "$APK_URL" != "null" ]; then
+              break
+            fi
+            sleep 5
+          done
+          echo "apk_url=$APK_URL" >> "$GITHUB_OUTPUT"
           echo "release_url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
 
       - name: Update manifest file
