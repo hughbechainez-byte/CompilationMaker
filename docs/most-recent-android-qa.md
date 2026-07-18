@@ -1,10 +1,10 @@
 # Most recent Android QA
 
-- Result: **FAIL** — exact published v0.17.26 remained `REFINING` at the 15-minute instrumentation deadline; no export or scan report was produced.
-- App/version: 0.17.26 (versionCode 58), app commit `583f602`, release tag `v0.17.26`; update-feed commit `b355540`.
-- Published APK: SHA-256 `975B1B03BD21291753CD6DA3918887A173555F7AF0DE7CBFBFFEAF5655E8D7A7`; test APK SHA-256 `632E9D43161BDB360C17ABFC30B0B1894EFFCA87FBC0BBEF21CE695F80ABD142`.
-- Fixtures: Video A SHA-256 `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`; host-only Video B SHA-256 `B417C1C5F36EC3D91129AD986EB32D9DF4813D25E1854C5ADE974F2B8A1C318C`. Video B was absent from the emulator.
-- Emulator evidence: API 35 `emulator-5554`; Activity closed into PiP and Launcher resumed; WorkManager foreground service and notification were observed; instrumentation runtime 914.450 seconds.
-- Scanner evidence: 61 checkpoints, 14 candidates, 30 recursive probes, 10 semantic leaves, 1,312 OCR calls, seven OCR timeout observations, and six confirmed valid transitions (`null -> 1` through `5 -> 6`); no false 6/9 oscillation was observed.
-- Clip-plan evidence: confirmation budget reached zero before candidate 7; output and scan report were not produced, so SSIM/audio/duration comparison against host-only Video B was unavailable.
-- First unresolved causal failure: candidate confirmation still consumes the global budget while sequentially processing the ten semantic leaves; the run stopped in `REFINING` after six confirmations, and the instrumentation deadline then force-stopped the app.
+- Result: **PASS** — release v0.17.27 completed Video A, exported a verified compilation, and met the under-four-minute target.
+- App/version: 0.17.27 (versionCode 59), app commit `c288061`, release tag `v0.17.27`.
+- Release APK: SHA-256 `0D15DBDBE5257C39DFA31D35226CCD98183A2F7AD09733E981D9A7000AA06CD4`; Android test APK SHA-256 `AA24C26EBFFF8F4BC0FAE5220FCE729B3744752F9C0B3827C77128181AF5591E`.
+- Fixture: Video A SHA-256 `DC6508A164983E6A30C3F0E114E54B6FFBCD4EEFF65E5FABF360EC0E87848258`; API 35 `emulator-5554` installed and exercised the signed v0.17.27 APK.
+- Current benchmark: 159.804 seconds end-to-end, versus published v0.17.26 at 357.280 seconds — 197.476 seconds faster (2.24x). Scanner time was 58.074 seconds versus 249.950 seconds (4.30x).
+- Scanner evidence: canonical `number-change-detector-v0.6.1` path, 121 PTS checkpoints, 244 OCR inferences, ten candidates, ten confirmed transitions, no fallback, and exact PTS marks from 30.000s through 3560.000s.
+- Output evidence: ten exact semantic clips, 400.000-second readable MP4, 31,298,138 bytes; instrumentation reported `OK (1 test)`.
+- First unresolved causal failure: none in the API 35 run. The physical Moto device was not updated because its preinstalled package has an incompatible signing certificate; that is an external test-device state, not an app failure.
