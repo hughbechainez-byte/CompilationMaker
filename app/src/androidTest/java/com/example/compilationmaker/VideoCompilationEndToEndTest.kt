@@ -40,6 +40,15 @@ class VideoCompilationEndToEndTest {
 
     @Test
     fun oneMinuteCheckpointFlowExportsVideoA() {
+        runVideoAFlow("Canonical Fast PTS (30s)")
+    }
+
+    @Test
+    fun monotonicTurboFlowExportsVideoA() {
+        runVideoAFlow("Monotonic Turbo PTS (3m adaptive, persistent 1→N)")
+    }
+
+    private fun runVideoAFlow(scanProfileLabel: String) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val source = requireNotNull(findVideoA()) { "Video A is not available in MediaStore" }
         Intents.intending(hasAction(Intent.ACTION_OPEN_DOCUMENT)).respondWith(
@@ -56,7 +65,7 @@ class VideoCompilationEndToEndTest {
         ActivityScenario.launch(MainActivity::class.java).use {
             onView(withId(R.id.selectButton)).perform(click())
             onView(withId(R.id.scanSpeedPicker)).perform(scrollTo(), click())
-            onData(allOf(instanceOf(String::class.java), `is`("Canonical Fast PTS (30s)"))).perform(click())
+            onData(allOf(instanceOf(String::class.java), `is`(scanProfileLabel))).perform(click())
             onView(withId(R.id.processButton)).perform(scrollTo(), click())
         }
 
@@ -77,6 +86,10 @@ class VideoCompilationEndToEndTest {
             File("/sdcard/Download/compilation_output_A_${System.currentTimeMillis()}.mp4")
         )
         assertEquals("Video A must produce ten clips", 10, finished.clipCount)
+        assertTrue(
+            "Video A compilation must remain within two seconds of the 400-second exact clip plan",
+            kotlin.math.abs(finished.outputDurationMs - 400_000L) <= 2_000L
+        )
     }
 
     @Test

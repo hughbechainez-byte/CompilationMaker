@@ -21,8 +21,8 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
- * Exact-boundary production exporter. Media3 decodes/re-encodes each clipped item instead of
- * exposing the previous sync sample as part of the requested clip.
+ * Exact-video-boundary production exporter. Video is decoded/re-encoded instead of exposing the
+ * previous sync sample as part of a requested clip, while compatible source audio is transmuxed.
  */
 @OptIn(UnstableApi::class)
 internal class Media3CompilationExporter(context: Context) {
@@ -91,7 +91,9 @@ internal class Media3CompilationExporter(context: Context) {
                     }
                     val sequence = EditedMediaItemSequence.withAudioAndVideoFrom(editedItems)
                     val composition = Composition.Builder(sequence)
-                        .setTransmuxAudio(false)
+                        // Every item is a clip of the same source URI, so its AAC samples are compatible.
+                        // Keep video transcoding for exact visual boundaries, but avoid re-encoding audio.
+                        .setTransmuxAudio(true)
                         .setTransmuxVideo(false)
                         .build()
                     val listener = object : Transformer.Listener {
