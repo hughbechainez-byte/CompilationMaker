@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "CompilationMaker"
 include(":app")
+include(":scanner")

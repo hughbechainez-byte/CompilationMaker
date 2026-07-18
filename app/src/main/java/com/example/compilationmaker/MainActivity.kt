@@ -765,6 +765,7 @@ class MainActivity : AppCompatActivity() {
             .putString(CompilationWorker.KEY_SCAN_WINDOW, scanWindowJson)
             .putInt(CompilationWorker.KEY_SCAN_MODE, requestedScanMode.ordinal)
             .putLong(CompilationWorker.KEY_CHECKPOINT_INTERVAL_MS, scanProfile.frameStepMs)
+            .putString(CompilationWorker.KEY_SCANNER_PROFILE_ID, scanProfile.scannerProfileId)
             .putInt(CompilationWorker.KEY_EXPERIMENTAL_DOWNSCALE, selectedExperimentalDownscaleSize())
             .putInt(CompilationWorker.KEY_QUALITY_ORDINAL, quality.ordinal)
             .putInt(CompilationWorker.KEY_FORMAT_ORDINAL, format.ordinal)
@@ -811,7 +812,7 @@ class MainActivity : AppCompatActivity() {
         }
         currentPipelineState = CompilationPipelineState.QUEUED
         emitCompilationProgress(
-            "Starting ${if (requestedScanMode == ScanMode.Experimental) "Experimental" else "Fast"} change-map scan " +
+            "Starting ${if (requestedScanMode == ScanMode.Experimental) "legacy experimental" else "PTS-aware OCR"} scan " +
                 "(${scanProfile.label}) and preparing output...",
             0
         )
@@ -5980,14 +5981,19 @@ private data class FrameProviderSelection(
 
 data class SegmentWindow(val startMs: Long, val endMs: Long)
 data class ScanWindow(val xPercent: Float, val yPercent: Float, val widthPercent: Float, val heightPercent: Float)
-internal data class ScanProfile(val label: String, val frameStepMs: Long, val mode: ScanMode)
+internal data class ScanProfile(
+    val label: String,
+    val frameStepMs: Long,
+    val mode: ScanMode,
+    val scannerProfileId: String? = null
+)
 
 internal fun compilationScanProfiles(): Array<ScanProfile> = arrayOf(
-    ScanProfile("Fast change-map (500ms)", 500L, ScanMode.StableCheckpoint),
-    ScanProfile("Accurate change-map (250ms)", 250L, ScanMode.StableCheckpoint),
-    ScanProfile("3-minute checkpoints", 180_000L, ScanMode.StableCheckpoint),
-    ScanProfile("1-minute checkpoints", 60_000L, ScanMode.StableCheckpoint),
-    ScanProfile("5-minute checkpoints", 300_000L, ScanMode.StableCheckpoint),
+    ScanProfile("Canonical Fast PTS (30s)", 30_000L, ScanMode.StableCheckpoint, "FAST"),
+    ScanProfile("Monotonic Turbo PTS (3m adaptive, persistent 1→N)", 180_000L, ScanMode.StableCheckpoint, "MONOTONIC_3_MIN"),
+    ScanProfile("Experimental Quick Mode (5m adaptive + parallel hardware)", 300_000L, ScanMode.StableCheckpoint, "QUICK_5_MIN"),
+    ScanProfile("Canonical Balanced PTS (10s)", 10_000L, ScanMode.StableCheckpoint, "BALANCED"),
+    ScanProfile("Canonical Precise PTS (3s)", 3_000L, ScanMode.StableCheckpoint, "PRECISE"),
     ScanProfile("Dense (125ms) [debug]", 125L, ScanMode.Experimental)
 )
 

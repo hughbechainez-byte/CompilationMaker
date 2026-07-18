@@ -1,0 +1,322 @@
+package com.example.compilationmaker
+
+import android.content.Context
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
+import com.hughbechainez.numberchangedetector.scanner.CornerNumberTransitionDetector
+import com.hughbechainez.numberchangedetector.scanner.CoreActivityEvent
+import com.hughbechainez.numberchangedetector.scanner.DetectionProgress
+import com.hughbechainez.numberchangedetector.scanner.DigitEvidence
+import com.hughbechainez.numberchangedetector.scanner.ScanProfile as DetectorScanProfile
+import com.hughbechainez.numberchangedetector.scanner.ScanWindow as DetectorScanWindow
+import com.hughbechainez.numberchangedetector.scanner.StatePoint
+import com.hughbechainez.numberchangedetector.scanner.TransitionDetectionRequest
+import com.hughbechainez.numberchangedetector.scanner.TransitionDetectionResult
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+
+private fun JSONObject.putFinite(key: String, value: Float, fallback: Float = 0f) {
+    put(key, if (value.isFinite()) value else fallback)
+}
+
+internal data class ScanTransitionSummary(
+    val eventBoundaryMs: Long,
+    val actualFramePtsMs: Long,
+    val fromNumber: Int?,
+    val toNumber: Int,
+    val confidence: Float,
+    val confirmation: String
+)
+
+internal data class CanonicalScanBridgeResult(
+    val segments: List<SegmentWindow>,
+    val videoDurationMs: Long,
+    val reportPath: String,
+    val candidateCount: Int,
+    val candidateTimestampsMs: List<Long>,
+    val rejectedTransitionCount: Int,
+    val completedCheckpointCount: Int,
+    val strategyFallbackUsed: Boolean,
+    val strategyFallbackReason: String?,
+    val transitionSummaries: List<ScanTransitionSummary>
+)
+
+internal data class CanonicalScanProgress(
+    val state: CompilationPipelineState,
+    val message: String,
+    val percent: Int
+)
+
+/**
+ * The sole production adapter for the imported v0.6.1 PTS-aware scanner.
+ * The scanner owns rotation normalization, so the ROI supplied here is display-upright.
+ */
+internal class CanonicalScannerBridge(private val context: Context) {
+    suspend fun scan(
+        sourceUri: Uri,
+        scanWindow: ScanWindow,
+        requestedIntervalMs: Long,
+        requestedProfileId: String?,
+        progress: (CompilationPipelineState, String, Int) -> Unit,
+        coreActivity: (CoreActivityEvent) -> Unit = {}
+    ): CanonicalScanBridgeResult {
+        val profile = canonicalProfileFor(requestedIntervalMs, requestedProfileId)
+        val quickMode = profile == DetectorScanProfile.QUICK_5_MIN
+        val result = CornerNumberTransitionDetector(context).detectWithCoreActivity(
+            request = TransitionDetectionRequest(
+                sourceUri = sourceUri,
+                roi = DetectorScanWindow(
+                    xFraction = scanWindow.xPercent,
+                    yFraction = scanWindow.yPercent,
+                    widthFraction = scanWindow.widthPercent,
+                    heightFraction = scanWindow.heightPercent
+                ),
+                profile = profile,
+                targetFrameWidthPx = if (quickMode) CANONICAL_QUICK_MODE_FRAME_WIDTH_PX else 640,
+                fallbackFrameWidthPx = 640,
+                maxParallelRefinements = if (quickMode) canonicalQuickModeParallelism(context) else 1
+            ),
+            onProgress = { detectorProgress ->
+                val mapped = mapCanonicalProgress(detectorProgress)
+                progress(mapped.state, mapped.message, mapped.percent)
+            },
+            onCoreActivity = { event -> coreActivity(event) }
+        )
+        val plan = mapCanonicalResult(result)
+        val reportPath = persistCanonicalReport(context, result, plan)
+        return plan.copy(reportPath = reportPath)
+    }
+}
+
+internal fun canonicalProfileFor(
+    requestedIntervalMs: Long,
+    requestedProfileId: String? = null
+): DetectorScanProfile = requestedProfileId
+    ?.let { profileId -> runCatching { DetectorScanProfile.valueOf(profileId) }.getOrNull() }
+    ?: when {
+    // Preserve the v0.6.1 scanner's explicit fast/accurate compatibility choices.
+    requestedIntervalMs == 500L -> DetectorScanProfile.FAST
+    requestedIntervalMs == 250L -> DetectorScanProfile.PRECISE
+    requestedIntervalMs <= DetectorScanProfile.PRECISE.checkpointIntervalMs -> DetectorScanProfile.PRECISE
+    requestedIntervalMs <= DetectorScanProfile.BALANCED.checkpointIntervalMs -> DetectorScanProfile.BALANCED
+    else -> DetectorScanProfile.FAST
+}
+
+internal fun canonicalProfileLabel(profile: DetectorScanProfile): String = when (profile) {
+    DetectorScanProfile.FAST -> "Canonical Fast PTS (30s)"
+    DetectorScanProfile.MONOTONIC_3_MIN -> "Monotonic Turbo PTS (3m adaptive, persistent 1→N)"
+    DetectorScanProfile.QUICK_5_MIN -> "Experimental Quick Mode (5m adaptive, parallel hardware lanes)"
+    DetectorScanProfile.BALANCED -> "Canonical Balanced PTS (10s)"
+    DetectorScanProfile.PRECISE -> "Canonical Precise PTS (3s)"
+}
+
+internal fun canonicalQuickModeParallelism(context: Context): Int {
+    val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+    val thermalSevere = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val power = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        (power?.currentThermalStatus ?: PowerManager.THERMAL_STATUS_NONE) >= PowerManager.THERMAL_STATUS_SEVERE
+    } else false
+    if (thermalSevere) return 1
+    return when {
+        cores >= 8 -> 3
+        cores >= 4 -> 2
+        else -> 1
+    }
+}
+
+private const val CANONICAL_QUICK_MODE_FRAME_WIDTH_PX = 384
+
+internal fun mapCanonicalProgress(progress: DetectionProgress): CanonicalScanProgress {
+    val state = when (progress.phase) {
+        "preflight" -> CompilationPipelineState.PREPARING
+        "coarse_scan" -> CompilationPipelineState.COARSE_SCAN
+        "refining" -> CompilationPipelineState.REFINING
+        "completed" -> CompilationPipelineState.BUILDING_CLIP_PLAN
+        else -> CompilationPipelineState.PREPARING
+    }
+    // Scanning occupies 0..54 in the existing worker; export starts at 55.
+    val percent = (progress.percent.coerceIn(0, 100) * 54 / 100).coerceIn(0, 54)
+    return CanonicalScanProgress(state, progress.message, percent)
+}
+
+internal fun mapCanonicalResult(result: TransitionDetectionResult): CanonicalScanBridgeResult {
+    val transitions = result.transitions.sortedBy { it.actualFramePtsMs }
+    val timestamps = transitions.map { it.actualFramePtsMs }.distinct()
+    val summaries = transitions.map { mark ->
+        ScanTransitionSummary(
+            eventBoundaryMs = mark.eventBoundaryMs,
+            actualFramePtsMs = mark.actualFramePtsMs,
+            fromNumber = mark.fromNumber,
+            toNumber = mark.toNumber,
+            confidence = mark.confidence,
+            confirmation = mark.confirmation
+        )
+    }
+    val candidateCount = maxOf(result.metrics.candidateCount, transitions.size)
+    val strategyFallbackReason = result.warnings.firstOrNull {
+        it.startsWith(CANONICAL_MONOTONIC_FALLBACK_WARNING_PREFIX)
+    }
+    return CanonicalScanBridgeResult(
+        segments = planExactTransitionSegments(timestamps, result.videoDurationMs),
+        videoDurationMs = result.videoDurationMs,
+        reportPath = "",
+        candidateCount = candidateCount,
+        candidateTimestampsMs = timestamps,
+        rejectedTransitionCount = (candidateCount - transitions.size).coerceAtLeast(0),
+        completedCheckpointCount = result.metrics.checkpointCount,
+        strategyFallbackUsed = strategyFallbackReason != null,
+        strategyFallbackReason = strategyFallbackReason,
+        transitionSummaries = summaries
+    )
+}
+
+private fun persistCanonicalReport(
+    context: Context,
+    result: TransitionDetectionResult,
+    plan: CanonicalScanBridgeResult
+): String {
+    val reportDir = File(context.filesDir, "scan_reports")
+    check(reportDir.exists() || reportDir.mkdirs()) { "Could not create scan report directory" }
+    val output = File(reportDir, "scan-${System.currentTimeMillis()}.json")
+    val temporary = File(reportDir, ".${output.name}.tmp")
+    if (temporary.exists()) temporary.delete()
+    temporary.writeText(canonicalReportJson(result, plan, System.currentTimeMillis()).toString(2))
+    check(temporary.renameTo(output)) { "Could not atomically publish scan report ${output.absolutePath}" }
+    return output.absolutePath
+}
+
+internal fun canonicalReportJson(
+    result: TransitionDetectionResult,
+    plan: CanonicalScanBridgeResult,
+    savedAtMs: Long
+): JSONObject = JSONObject().apply {
+    val rejected = plan.rejectedTransitionCount
+    val effectiveProfile = if (plan.strategyFallbackUsed) DetectorScanProfile.FAST else result.profile
+    put("schemaVersion", result.schemaVersion)
+    put("sourceUri", result.sourceUri)
+    put("profileLabel", canonicalProfileLabel(result.profile))
+    put("requestedProfileLabel", canonicalProfileLabel(result.profile))
+    put("effectiveProfileLabel", canonicalProfileLabel(effectiveProfile))
+    put("scannerMode", ScanMode.StableCheckpoint.name)
+    put("frameProvider", "MediaRetrieverFrameSampler")
+    put("frameProviderFallbackReason", JSONObject.NULL)
+    put("checkpointIntervalMs", effectiveProfile.checkpointIntervalMs)
+    put("requestedCheckpointIntervalMs", result.profile.checkpointIntervalMs)
+    put("effectiveCheckpointIntervalMs", effectiveProfile.checkpointIntervalMs)
+    putFinite("scanSpeedMultiple", result.metrics.videoToWallSpeed)
+    put("experimentalDownscaleSize", 0)
+    put("videoDurationMs", result.videoDurationMs)
+    put("wallClockScanMs", result.metrics.wallClockMs)
+    put("candidateWindows", result.metrics.candidateCount)
+    put("coarseSampleCount", result.metrics.checkpointCount)
+    put("acceptedTransitions", result.transitions.size)
+    put("rejectedCandidates", rejected)
+    put("fallbackUsed", plan.strategyFallbackUsed)
+    put("failureReason", plan.strategyFallbackReason ?: JSONObject.NULL)
+    put("ocrCallCount", result.metrics.ocrInferenceCount)
+    put("frameStepMs", effectiveProfile.checkpointIntervalMs)
+    put("candidatesFound", result.metrics.candidateCount)
+    put("mode", ScanMode.StableCheckpoint.name)
+    put("durationMs", result.videoDurationMs)
+    put("transitionsFound", result.transitions.size)
+    put("scannerVersion", result.metrics.scannerVersion)
+    put("scannerEngine", "number-change-detector-v0.6.1")
+    put("scannerOwnership", "CompilationMaker canonical scanner module")
+    put("metrics", JSONObject().apply {
+        put("wallClockMs", result.metrics.wallClockMs)
+        put("checkpointCount", result.metrics.checkpointCount)
+        put("decodedFrameCount", result.metrics.decodedFrameCount)
+        put("ocrInferenceCount", result.metrics.ocrInferenceCount)
+        put("candidateCount", result.metrics.candidateCount)
+        put("confirmedTransitionCount", result.metrics.confirmedTransitionCount)
+        put("acceptedTransitions", result.transitions.size)
+        put("rejectedCandidates", rejected)
+        putFinite("throughputVideoToWall", result.metrics.videoToWallSpeed)
+        put("scanRate20xGateMet", result.metrics.videoToWallSpeed >= 20f)
+        put("scanRate30xGateMet", result.metrics.videoToWallSpeed >= 30f)
+    })
+    put("clipPlan", JSONObject().apply {
+        put("policy", "exact-semantic-windows-v1")
+        put("resultClassification", if (plan.transitionSummaries.isEmpty()) "NONE" else "CONFIRMED")
+        put("clipCount", plan.segments.size)
+        put("totalDurationMs", expectedCompilationDurationMs(plan.segments))
+        put("transitionSummaries", transitionSummariesJson(plan.transitionSummaries))
+        put("segments", JSONArray().apply {
+            plan.segments.forEach { segment ->
+                put(JSONObject().apply {
+                    put("startMs", segment.startMs)
+                    put("endMs", segment.endMs)
+                    put("durationMs", (segment.endMs - segment.startMs).coerceAtLeast(0L))
+                })
+            }
+        })
+    })
+    put("candidateConfirmations", JSONArray())
+    put("checkpointTimeline", JSONArray().apply {
+        result.checkpoints.forEach { put(statePointJson(it)) }
+    })
+    put("recursiveStateEvidence", JSONArray())
+    put("transitionMarks", JSONArray().apply {
+        result.transitions.sortedBy { it.actualFramePtsMs }.forEach { mark ->
+            put(JSONObject().apply {
+                put("eventBoundaryMs", mark.eventBoundaryMs)
+                put("actualFramePtsMs", mark.actualFramePtsMs)
+                put("fromNumber", mark.fromNumber ?: JSONObject.NULL)
+                put("toNumber", mark.toNumber)
+                putFinite("confidence", mark.confidence)
+                put("confirmation", mark.confirmation)
+                put("requestedCutStartMs", (mark.actualFramePtsMs - 10_000L).coerceAtLeast(0L))
+                put("requestedCutEndMs", (mark.actualFramePtsMs + 30_000L).coerceAtMost(result.videoDurationMs))
+                put("candidateReason", "sparse-checkpoint-pts")
+                putFinite("candidatePeakScore", mark.confidence)
+                put("evidence", JSONArray().apply { mark.evidence.forEach { put(evidenceJson(it)) } })
+            })
+        }
+    })
+    put("scanWindow", JSONObject().apply {
+        put("coordinateSpace", "display-upright")
+        putFinite("xPercent", result.roi.xFraction)
+        putFinite("yPercent", result.roi.yFraction)
+        putFinite("widthPercent", result.roi.widthFraction)
+        putFinite("heightPercent", result.roi.heightFraction)
+    })
+    put("warnings", JSONArray(result.warnings))
+    put("savedAtMs", savedAtMs)
+}
+
+private const val CANONICAL_MONOTONIC_FALLBACK_WARNING_PREFIX =
+    "Monotonic turbo fell back to the proven 30-second scan:"
+
+internal fun transitionSummariesJson(summaries: List<ScanTransitionSummary>): JSONArray = JSONArray().apply {
+    summaries.forEach { summary ->
+        put(JSONObject().apply {
+            put("eventBoundaryMs", summary.eventBoundaryMs)
+            put("actualFramePtsMs", summary.actualFramePtsMs)
+            put("fromNumber", summary.fromNumber ?: JSONObject.NULL)
+            put("toNumber", summary.toNumber)
+            putFinite("confidence", summary.confidence)
+            put("confirmation", summary.confirmation)
+        })
+    }
+}
+
+private fun statePointJson(point: StatePoint): JSONObject = JSONObject().apply {
+    put("timeMs", point.timeMs)
+    put("source", "coarse-checkpoint")
+    put("value", point.value ?: JSONObject.NULL)
+    point.evidence?.let { put("evidence", evidenceJson(it)) }
+}
+
+private fun evidenceJson(evidence: DigitEvidence): JSONObject = JSONObject().apply {
+    put("requestedTimeMs", evidence.requestedTimeMs)
+    put("actualFramePtsMs", evidence.actualFramePtsMs ?: JSONObject.NULL)
+    put("parsedNumber", evidence.parsedNumber ?: JSONObject.NULL)
+    put("rawText", evidence.rawText)
+    putFinite("confidence", evidence.confidence)
+    put("branch", evidence.branch)
+    put("status", evidence.status.name)
+    put("elapsedMs", evidence.elapsedMs)
+    put("topologyDecision", evidence.topologyDecision ?: JSONObject.NULL)
+}

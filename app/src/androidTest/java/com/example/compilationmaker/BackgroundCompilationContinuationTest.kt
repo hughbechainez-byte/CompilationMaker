@@ -60,7 +60,7 @@ class BackgroundCompilationContinuationTest {
         ActivityScenario.launch(MainActivity::class.java).use {
             onView(withId(R.id.selectButton)).perform(click())
             onView(withId(R.id.scanSpeedPicker)).perform(scrollTo(), click())
-            onData(allOf(instanceOf(String::class.java), `is`("1-minute checkpoints"))).perform(click())
+            onData(allOf(instanceOf(String::class.java), `is`("Canonical Fast PTS (30s)"))).perform(click())
             onView(withId(R.id.processButton)).perform(scrollTo(), click())
 
             val store = CompilationJobStore(context)

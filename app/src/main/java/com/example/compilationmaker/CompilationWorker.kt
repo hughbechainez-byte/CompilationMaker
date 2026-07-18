@@ -41,9 +41,8 @@ class CompilationWorker(
         val formatOrdinal = inputData.getInt(KEY_FORMAT_ORDINAL, ExportFormat.Mp4.ordinal)
         val transitionOrdinal = inputData.getInt(KEY_TRANSITION_STYLE_ORDINAL, TransitionStyle.Instant.ordinal)
         val scanModeOrdinal = inputData.getInt(KEY_SCAN_MODE, ScanMode.StableCheckpoint.ordinal)
-        val checkpointIntervalMs = inputData.getLong(KEY_CHECKPOINT_INTERVAL_MS, 180_000L)
-        val downscaleSize = inputData.getInt(KEY_EXPERIMENTAL_DOWNSCALE, 32)
-        val rotation = inputData.getInt(KEY_VIDEO_ROTATION, 0)
+        val checkpointIntervalMs = inputData.getLong(KEY_CHECKPOINT_INTERVAL_MS, 30_000L)
+        val scannerProfileId = inputData.getString(KEY_SCANNER_PROFILE_ID)
         val scanWindowRaw = inputData.getString(KEY_SCAN_WINDOW)
         val expectedOutputPath = inputData.getString(CompilationJobContract.KEY_EXPECTED_OUTPUT_PATH).orEmpty()
         val expectedOutputFile = expectedOutputPath.takeIf { it.isNotBlank() }?.let(::File)
@@ -85,14 +84,10 @@ class CompilationWorker(
 
         return@withContext try {
             var scanResult = runScanWithMode(
-                engine = engine,
                 sourceUri = sourceUri,
-                scanMode = scanMode,
                 scanWindow = scanWindow,
                 scanIntervalMs = checkpointIntervalMs,
-                rotation = rotation,
-                downscaleSize = downscaleSize,
-                transitionStyle = transitionStyle
+                scannerProfileId = scannerProfileId
             ) { state, message, percent ->
                 val phase = progressPhaseForState(state, scanMode)
                 setProgressCompat(phase, message, percent, pipelineState = state)
@@ -108,14 +103,10 @@ class CompilationWorker(
                 setProgressCompat("fallback", "Experimental mode failed, falling back to stable checkpoint", 50, true)
                 setForegroundCompat("fallback", "Experimental mode failed, falling back to stable checkpoint", 50, true)
                 scanResult = runScanWithMode(
-                    engine = engine,
                     sourceUri = sourceUri,
-                    scanMode = ScanMode.StableCheckpoint,
                     scanWindow = scanWindow,
-                    scanIntervalMs = checkpointIntervalMs,
-                    rotation = rotation,
-                    downscaleSize = downscaleSize,
-                    transitionStyle = transitionStyle
+                    scanIntervalMs = 30_000L,
+                    scannerProfileId = "FAST"
                 ) { state, message, percent ->
                     val phase = progressPhaseForState(state, ScanMode.StableCheckpoint)
                     setProgressCompat(phase, message, percent, pipelineState = state)
@@ -126,6 +117,14 @@ class CompilationWorker(
 
             if (!scanResult.success) {
                 throw scanResult.failure ?: IllegalStateException(scanResult.failureReason ?: "Scan failed")
+            }
+
+            if (scanResult.strategyFallbackUsed) {
+                fallbackUsed = true
+                failureReason = listOfNotNull(
+                    failureReason?.takeIf { it.isNotBlank() },
+                    scanResult.strategyFallbackReason?.takeIf { it.isNotBlank() }
+                ).distinct().joinToString("; ").ifBlank { "The requested scan strategy used its safe fallback" }
             }
 
             val provisionalPreview =
@@ -351,47 +350,44 @@ class CompilationWorker(
     }
 
     private suspend fun runScanWithMode(
-        engine: VideoCompilationEngine,
         sourceUri: Uri,
-        scanMode: ScanMode,
         scanWindow: ScanWindow,
         scanIntervalMs: Long,
-        rotation: Int,
-        downscaleSize: Int,
-        transitionStyle: TransitionStyle,
+        scannerProfileId: String?,
         progress: (CompilationPipelineState, String, Int) -> Unit
     ): ScanTaskResult = withContext(Dispatchers.IO) {
         return@withContext try {
-            val result = engine.findNumberTransitionSegments(
+            val result = CanonicalScannerBridge(applicationContext).scan(
                 sourceUri = sourceUri,
-                frameStepMs = scanIntervalMs,
-                scanMode = scanMode,
                 scanWindow = scanWindow,
-                sourceRotationDegrees = rotation,
-                scanProfileLabel = scanMode.name,
-                transitionStyle = transitionStyle,
-                experimentalDownscaleSize = downscaleSize,
-                fallbackUsed = false
-            ) { state, message, percent ->
-                progress(state, message, if (scanMode == ScanMode.StableCheckpoint) percent else (percent * 0.5f + 20f).toInt())
-            }
-            val durationMs = resolveSourceDurationMs(result.videoDurationMs, result.timing.totalMs())
+                requestedIntervalMs = scanIntervalMs,
+                requestedProfileId = scannerProfileId,
+                progress = progress,
+                coreActivity = { event -> CoreActivityTelemetry.emit(id.toString(), event) }
+            )
             ScanTaskResult(
                 success = true,
                 segments = result.segments,
-                durationMs = durationMs,
-                reportPath = engine.latestScanReportPath,
+                durationMs = result.videoDurationMs,
+                reportPath = result.reportPath,
                 candidateCount = result.candidateCount,
                 candidateTimestampsMs = result.candidateTimestampsMs,
-                scanBudgetReached = result.scanBudgetReached,
-                visualFallbackUsed = result.visualFallbackUsed,
-                confirmedTransitionCount = result.confirmedTransitionCount,
-                provisionalTransitionCount = result.provisionalTransitionCount,
+                scanBudgetReached = false,
+                visualFallbackUsed = false,
+                confirmedTransitionCount = result.transitionSummaries.size,
+                provisionalTransitionCount = 0,
                 rejectedTransitionCount = result.rejectedTransitionCount,
                 completedCheckpointCount = result.completedCheckpointCount,
-                recursiveProbeCount = result.recursiveProbeCount,
-                semanticLeafCount = result.semanticLeafCount,
-                previewClassification = result.previewClassification
+                strategyFallbackUsed = result.strategyFallbackUsed,
+                strategyFallbackReason = result.strategyFallbackReason,
+                recursiveProbeCount = 0,
+                semanticLeafCount = result.candidateCount,
+                previewClassification = if (result.transitionSummaries.isEmpty()) {
+                    CompilationPreviewClassification.NONE
+                } else {
+                    CompilationPreviewClassification.CONFIRMED
+                },
+                transitionSummaries = result.transitionSummaries
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -401,7 +397,7 @@ class CompilationWorker(
                 success = false,
                 segments = emptyList(),
                 durationMs = 0L,
-                reportPath = engine.latestScanReportPath,
+                reportPath = null,
                 failureReason = e.message,
                 failure = e
             )
@@ -437,6 +433,7 @@ class CompilationWorker(
         put("candidateTimestampsMs", JSONArray().apply {
             result.candidateTimestampsMs.forEach(::put)
         })
+        put("transitionSummaries", transitionSummariesJson(result.transitionSummaries))
         put("segments", JSONArray().apply {
             result.segments.forEach { segment ->
                 put(JSONObject().apply {
@@ -620,9 +617,12 @@ class CompilationWorker(
         val provisionalTransitionCount: Int = 0,
         val rejectedTransitionCount: Int = 0,
         val completedCheckpointCount: Int = 0,
+        val strategyFallbackUsed: Boolean = false,
+        val strategyFallbackReason: String? = null,
         val recursiveProbeCount: Int = 0,
         val semanticLeafCount: Int = 0,
-        val previewClassification: CompilationPreviewClassification = CompilationPreviewClassification.NONE
+        val previewClassification: CompilationPreviewClassification = CompilationPreviewClassification.NONE,
+        val transitionSummaries: List<ScanTransitionSummary> = emptyList()
     )
 
     companion object {
@@ -630,6 +630,7 @@ class CompilationWorker(
         const val KEY_SCAN_WINDOW = "scanWindow"
         const val KEY_SCAN_MODE = "scanMode"
         const val KEY_CHECKPOINT_INTERVAL_MS = "checkpointIntervalMs"
+        const val KEY_SCANNER_PROFILE_ID = "scannerProfileId"
         const val KEY_EXPERIMENTAL_DOWNSCALE = "experimentalDownscale"
         const val KEY_QUALITY_ORDINAL = "qualityOrdinal"
         const val KEY_FORMAT_ORDINAL = "formatOrdinal"
