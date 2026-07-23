@@ -49,16 +49,23 @@ class MediaRetrieverFrameSampler(
         val sourceHeight = metadata.encodedHeight.coerceAtLeast(1)
         val width = targetWidthPx.coerceAtLeast(64)
         val height = max(1, (sourceHeight.toFloat() * width / sourceWidth).toInt())
+        // Coarse checkpoints: CLOSEST_SYNC jumps to keyframes (much faster seeks).
+        // Refinement / exact PTS: CLOSEST for frame-accurate boundaries.
+        val option = if (exactPresentationTime) {
+            MediaMetadataRetriever.OPTION_CLOSEST
+        } else {
+            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+        }
         val raw = runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                 retriever.getScaledFrameAtTime(
                     safeTimeMs * 1_000L,
-                    MediaMetadataRetriever.OPTION_CLOSEST,
+                    option,
                     width,
                     height
-                ) ?: retriever.getFrameAtTime(safeTimeMs * 1_000L, MediaMetadataRetriever.OPTION_CLOSEST)
+                ) ?: retriever.getFrameAtTime(safeTimeMs * 1_000L, option)
             } else {
-                retriever.getFrameAtTime(safeTimeMs * 1_000L, MediaMetadataRetriever.OPTION_CLOSEST)
+                retriever.getFrameAtTime(safeTimeMs * 1_000L, option)
             }
         }.getOrNull() ?: return@withContext null
 

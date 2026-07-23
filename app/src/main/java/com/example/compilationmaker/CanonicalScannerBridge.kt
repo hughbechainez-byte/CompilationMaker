@@ -75,14 +75,13 @@ internal class CanonicalScannerBridge(private val context: Context) {
                     heightFraction = scanWindow.heightPercent
                 ),
                 profile = profile,
-                // Faster coarse frames for Fast / Turbo / Quick; Precise keeps full 640.
+                // Fast / Turbo / Quick all share the tighter 384px coarse path.
                 targetFrameWidthPx = when {
-                    quickMode -> CANONICAL_QUICK_MODE_FRAME_WIDTH_PX
-                    fastMode -> CANONICAL_FAST_MODE_FRAME_WIDTH_PX
+                    quickMode || fastMode -> CANONICAL_FAST_MODE_FRAME_WIDTH_PX
                     else -> 640
                 },
                 fallbackFrameWidthPx = 640,
-                // Parallel refinement for Fast and Quick (thermal-aware).
+                // Parallel refinement + parallel coarse for Fast and Quick (thermal-aware).
                 maxParallelRefinements = when {
                     quickMode || fastMode -> canonicalQuickModeParallelism(context)
                     else -> 1
@@ -136,8 +135,7 @@ internal fun canonicalQuickModeParallelism(context: Context): Int {
     }
 }
 
-private const val CANONICAL_QUICK_MODE_FRAME_WIDTH_PX = 384
-private const val CANONICAL_FAST_MODE_FRAME_WIDTH_PX = 480
+private const val CANONICAL_FAST_MODE_FRAME_WIDTH_PX = 384
 
 internal fun mapCanonicalProgress(progress: DetectionProgress): CanonicalScanProgress {
     val state = when (progress.phase) {
