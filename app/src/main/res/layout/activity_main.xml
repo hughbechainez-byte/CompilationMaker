@@ -37,7 +37,6 @@
             android:textStyle="bold"
             android:visibility="gone" />
 
-        <!-- SOURCE -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -69,7 +68,6 @@
             android:text="ROI setup: select a video"
             android:textSize="12sp" />
 
-        <!-- ROI -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -141,73 +139,56 @@
             android:layout_marginTop="4dp"
             android:text="Refresh ROI" />
 
-        <CheckBox
-            android:id="@+id/advancedRoiToggle"
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Show advanced ROI percent fields"
-            android:checked="false" />
+            android:layout_marginTop="10dp"
+            android:text="Detection area (% of frame: X, Y, Width, Height)"
+            android:textSize="12sp" />
 
         <LinearLayout
-            android:id="@+id/advancedRoiContainer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:visibility="gone">
+            android:orientation="horizontal"
+            android:weightSum="4">
 
-            <TextView
-                android:layout_width="match_parent"
+            <EditText
+                android:id="@+id/scanAreaX"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="Detection area (% of frame: X, Y, Width, Height)"
-                android:textSize="12sp" />
+                android:layout_weight="1"
+                android:hint="X"
+                android:inputType="numberDecimal"
+                android:text="0" />
 
-            <LinearLayout
-                android:layout_width="match_parent"
+            <EditText
+                android:id="@+id/scanAreaY"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:weightSum="4">
+                android:layout_weight="1"
+                android:hint="Y"
+                android:inputType="numberDecimal"
+                android:text="80" />
 
-                <EditText
-                    android:id="@+id/scanAreaX"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:hint="X"
-                    android:inputType="numberDecimal"
-                    android:text="0" />
+            <EditText
+                android:id="@+id/scanAreaWidth"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="W"
+                android:inputType="numberDecimal"
+                android:text="10" />
 
-                <EditText
-                    android:id="@+id/scanAreaY"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:hint="Y"
-                    android:inputType="numberDecimal"
-                    android:text="80" />
-
-                <EditText
-                    android:id="@+id/scanAreaWidth"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:hint="W"
-                    android:inputType="numberDecimal"
-                    android:text="10" />
-
-                <EditText
-                    android:id="@+id/scanAreaHeight"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:hint="H"
-                    android:inputType="numberDecimal"
-                    android:text="30" />
-            </LinearLayout>
+            <EditText
+                android:id="@+id/scanAreaHeight"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="H"
+                android:inputType="numberDecimal"
+                android:text="30" />
         </LinearLayout>
 
-        <!-- SCAN -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -308,7 +289,6 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
 
-        <!-- BUILD -->
         <Button
             android:id="@+id/processButton"
             android:layout_width="match_parent"
@@ -456,7 +436,6 @@
                 android:textSize="12sp" />
         </ScrollView>
 
-        <!-- DIAGNOSTICS (lower priority) -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
