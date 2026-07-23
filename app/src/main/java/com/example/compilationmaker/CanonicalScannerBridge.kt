@@ -64,6 +64,7 @@ internal class CanonicalScannerBridge(private val context: Context) {
     ): CanonicalScanBridgeResult {
         val profile = canonicalProfileFor(requestedIntervalMs, requestedProfileId)
         val quickMode = profile == DetectorScanProfile.QUICK_5_MIN
+        val fastMode = profile == DetectorScanProfile.FAST || profile == DetectorScanProfile.MONOTONIC_3_MIN
         val result = CornerNumberTransitionDetector(context).detectWithCoreActivity(
             request = TransitionDetectionRequest(
                 sourceUri = sourceUri,
@@ -74,9 +75,18 @@ internal class CanonicalScannerBridge(private val context: Context) {
                     heightFraction = scanWindow.heightPercent
                 ),
                 profile = profile,
-                targetFrameWidthPx = if (quickMode) CANONICAL_QUICK_MODE_FRAME_WIDTH_PX else 640,
+                // Faster coarse frames for Fast / Turbo / Quick; Precise keeps full 640.
+                targetFrameWidthPx = when {
+                    quickMode -> CANONICAL_QUICK_MODE_FRAME_WIDTH_PX
+                    fastMode -> CANONICAL_FAST_MODE_FRAME_WIDTH_PX
+                    else -> 640
+                },
                 fallbackFrameWidthPx = 640,
-                maxParallelRefinements = if (quickMode) canonicalQuickModeParallelism(context) else 1
+                // Parallel refinement for Fast and Quick (thermal-aware).
+                maxParallelRefinements = when {
+                    quickMode || fastMode -> canonicalQuickModeParallelism(context)
+                    else -> 1
+                }
             ),
             onProgress = { detectorProgress ->
                 val mapped = mapCanonicalProgress(detectorProgress)
@@ -127,6 +137,7 @@ internal fun canonicalQuickModeParallelism(context: Context): Int {
 }
 
 private const val CANONICAL_QUICK_MODE_FRAME_WIDTH_PX = 384
+private const val CANONICAL_FAST_MODE_FRAME_WIDTH_PX = 480
 
 internal fun mapCanonicalProgress(progress: DetectionProgress): CanonicalScanProgress {
     val state = when (progress.phase) {
