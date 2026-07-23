@@ -51,6 +51,7 @@ class CornerNumberTransitionDetector(
         val warnings = ArrayList<String>()
         val decodedFrames = AtomicInteger(0)
         val ocrInferences = AtomicInteger(0)
+        val completedCheckpoints = AtomicInteger(0)
         val roi = request.roi.normalized()
 
         suspend fun emitCore(event: CoreActivityEvent) {
@@ -220,26 +221,69 @@ class CornerNumberTransitionDetector(
                     progressStart: Int,
                     progressSpan: Int,
                     label: String,
-                    lane: RecognitionLane = primaryLane
+                    baseLane: RecognitionLane = primaryLane
                 ): List<StatePoint> {
                     val times = generateCheckpointTimestamps(metadata.durationMs, intervalMs)
-                    return times.mapIndexed { index, timeMs ->
-                        val evidence = recognizeWithLane(
-                            lane,
-                            timeMs,
-                            exactPresentationTime = false,
-                            aggressive = true
-                        )
-                        val percent = progressStart +
-                            ((index + 1) * progressSpan / times.size.coerceAtLeast(1))
-                        onProgress(
-                            DetectionProgress(
-                                "coarse_scan",
-                                "$label ${index + 1}/${times.size} at ${formatTimestampMs(timeMs)}: ${evidence.parsedNumber ?: "none"}",
-                                percent.coerceIn(0, 98)
+                    if (times.isEmpty()) return emptyList()
+                    completedCheckpoints.set(0)
+                    val laneCount = request.maxParallelRefinements.coerceIn(1, min(3, times.size))
+                    val lanes = ArrayList<RecognitionLane>(laneCount).apply {
+                        add(baseLane)
+                        repeat(laneCount - 1) {
+                            add(
+                                RecognitionLane(
+                                    sampler = samplerFactory(request.sourceUri),
+                                    recognizer = recognizerFactory(),
+                                    targetFrameWidthPx = baseLane.targetFrameWidthPx
+                                )
+                            )
+                        }
+                    }
+                    if (laneCount > 1) {
+                        emitCore(
+                            CoreActivityEvent(
+                                CoreActivityStage.FRAME_FETCH,
+                                "parallel-coarse",
+                                "$laneCount independent decoder/OCR lanes for ${times.size} checkpoints"
                             )
                         )
-                        StatePoint(timeMs, evidence.parsedNumber, evidence)
+                    }
+                    return try {
+                        val ordered = coroutineScope {
+                            lanes.mapIndexed { laneIndex, lane ->
+                                async(Dispatchers.Default) {
+                                    times.withIndex()
+                                        .filter { it.index % laneCount == laneIndex }
+                                        .map { indexed ->
+                                            currentCoroutineContext().ensureActive()
+                                            val evidence = recognizeWithLane(
+                                                lane,
+                                                indexed.value,
+                                                exactPresentationTime = false,
+                                                aggressive = true
+                                            )
+                                            val done = completedCheckpoints.incrementAndGet()
+                                            val percent = progressStart +
+                                                (done * progressSpan / times.size.coerceAtLeast(1))
+                                            onProgress(
+                                                DetectionProgress(
+                                                    "coarse_scan",
+                                                    "$label $done/${times.size} at ${formatTimestampMs(indexed.value)}: ${evidence.parsedNumber ?: "none"}",
+                                                    percent.coerceIn(0, 98)
+                                                )
+                                            )
+                                            indexed.index to StatePoint(indexed.value, evidence.parsedNumber, evidence)
+                                        }
+                                }
+                            }.awaitAll().flatten().sortedBy { it.first }.map { it.second }
+                        }
+                        // Merge extra-lane coarse caches into the primary lane so refinement can reuse hits.
+                        lanes.filter { it !== baseLane }.forEach { extra ->
+                            baseLane.coarseCache.putAll(extra.coarseCache)
+                        }
+                        ordered
+                    } finally {
+                        lanes.filter { it !== baseLane }.forEach(RecognitionLane::close)
                     }
                 }
 
@@ -355,7 +399,7 @@ class CornerNumberTransitionDetector(
                                 progressStart = 81,
                                 progressSpan = 9,
                                 label = "Fallback checkpoint",
-                                lane = fallbackLane
+                                baseLane = fallbackLane
                             )
                         )
                         val fallbackBrackets = buildTransitionBrackets(fallbackTimeline)
