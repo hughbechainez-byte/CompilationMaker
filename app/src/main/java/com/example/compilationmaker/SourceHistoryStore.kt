@@ -2,7 +2,9 @@ package com.example.compilationmaker
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import org.json.JSONArray
 import org.json.JSONObject
@@ -13,11 +15,21 @@ data class SourceHistoryEntry(
     val outputUri: String,
     val displayName: String,
     val completedAtMs: Long,
-    val sourceDeleted: Boolean = false
+    val sourceDeleted: Boolean = false,
+    /** true when entry came from MediaStore Downloads scan, not exact history. */
+    val heuristicMatch: Boolean = false
+)
+
+data class CleanupScanSummary(
+    val entries: List<SourceHistoryEntry>,
+    val compilationMakerExportCount: Int,
+    val downloadsVideoCount: Int,
+    val historyMatchCount: Int
 )
 
 /**
  * Tracks successful compilation pairs (source → output) for auto-delete and batch cleanup.
+ * Also discovers candidates by scanning Movies/CompilationMaker + Downloads via MediaStore.
  */
 class SourceHistoryStore(context: Context) {
     private val appContext = context.applicationContext
@@ -41,10 +53,10 @@ class SourceHistoryStore(context: Context) {
                 outputUri = outputUri,
                 displayName = displayName.ifBlank { guessDisplayName(sourceUri) },
                 completedAtMs = System.currentTimeMillis(),
-                sourceDeleted = false
+                sourceDeleted = false,
+                heuristicMatch = false
             )
         )
-        // Cap history so prefs stay small.
         while (entries.size > MAX_ENTRIES) entries.removeAt(entries.lastIndex)
         save(entries)
     }
@@ -70,7 +82,8 @@ class SourceHistoryStore(context: Context) {
                     outputUri = o.optString("outputUri", ""),
                     displayName = o.optString("displayName", ""),
                     completedAtMs = o.optLong("completedAtMs", 0L),
-                    sourceDeleted = o.optBoolean("sourceDeleted", false)
+                    sourceDeleted = o.optBoolean("sourceDeleted", false),
+                    heuristicMatch = o.optBoolean("heuristicMatch", false)
                 ).takeIf { it.sourceUri.isNotBlank() }
             }
         }.getOrDefault(emptyList())
@@ -79,6 +92,68 @@ class SourceHistoryStore(context: Context) {
     /** Entries whose source still appears readable and not yet deleted. */
     fun loadDeletableSources(): List<SourceHistoryEntry> = load().filter { entry ->
         !entry.sourceDeleted && sourceStillExists(entry.sourceUri)
+    }
+
+    /**
+     * Device scan used by CleanupActivity:
+     * 1) exact SourceHistory pairs still on device
+     * 2) last successful job source (if still present)
+     * 3) if Movies/CompilationMaker has exports, list remaining Downloads videos as candidates
+     */
+    fun discoverDeletableSources(): CleanupScanSummary {
+        val history = loadDeletableSources()
+        val seen = history.map { it.sourceUri }.toMutableSet()
+        val merged = history.toMutableList()
+
+        // Last successful job source (covers runs before history was wired).
+        runCatching {
+            val last = CompilationJobStore(appContext).loadLastSuccess() ?: return@runCatching
+            val src = last.sourceUri
+            if (src.isNotBlank() && src !in seen && sourceStillExists(src)) {
+                seen += src
+                merged += SourceHistoryEntry(
+                    sourceUri = src,
+                    outputPath = last.outputPath,
+                    outputUri = last.outputUri,
+                    displayName = resolveDisplayName(src),
+                    completedAtMs = last.completedAtMs.takeIf { it > 0L } ?: last.updatedAtMs,
+                    sourceDeleted = false,
+                    heuristicMatch = false
+                )
+            }
+        }
+
+        val cmExports = queryVideosUnderRelativePath(COMPILATION_MAKER_RELATIVE_PATH)
+        val downloads = queryVideosUnderRelativePath(DOWNLOAD_RELATIVE_PATH) +
+            queryVideosUnderRelativePath(DOWNLOADS_RELATIVE_PATH)
+
+        // When CM exports exist, surface Downloads videos not already listed so the user can
+        // delete originals that predate history tracking.
+        if (cmExports.isNotEmpty()) {
+            downloads.forEach { video ->
+                val uri = video.uriString
+                if (uri in seen) return@forEach
+                // Skip files that themselves live under CompilationMaker (already exports).
+                if (video.relativePath.contains("CompilationMaker", ignoreCase = true)) return@forEach
+                seen += uri
+                merged += SourceHistoryEntry(
+                    sourceUri = uri,
+                    outputPath = "",
+                    outputUri = "",
+                    displayName = video.displayName.ifBlank { uri.takeLast(48) },
+                    completedAtMs = video.dateAddedMs,
+                    sourceDeleted = false,
+                    heuristicMatch = true
+                )
+            }
+        }
+
+        return CleanupScanSummary(
+            entries = merged,
+            compilationMakerExportCount = cmExports.size,
+            downloadsVideoCount = downloads.size,
+            historyMatchCount = history.size
+        )
     }
 
     fun sourceStillExists(sourceUri: String): Boolean {
@@ -115,6 +190,52 @@ class SourceHistoryStore(context: Context) {
         }.getOrNull()?.takeIf { it.isNotBlank() } ?: guessDisplayName(sourceUri)
     }
 
+    private data class MediaVideo(
+        val uriString: String,
+        val displayName: String,
+        val relativePath: String,
+        val dateAddedMs: Long
+    )
+
+    private fun queryVideosUnderRelativePath(relativePathPrefix: String): List<MediaVideo> {
+        val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        val projection = arrayOf(
+            MediaStore.Video.Media._ID,
+            MediaStore.Video.Media.DISPLAY_NAME,
+            MediaStore.Video.Media.RELATIVE_PATH,
+            MediaStore.Video.Media.DATE_ADDED
+        )
+        // RELATIVE_PATH is like "Movies/CompilationMaker/" or "Download/"
+        val selection = "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?"
+        val args = arrayOf("%$relativePathPrefix%")
+        return runCatching {
+            appContext.contentResolver.query(
+                collection,
+                projection,
+                selection,
+                args,
+                "${MediaStore.Video.Media.DATE_ADDED} DESC"
+            )?.use { cursor ->
+                val idIdx = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
+                val nameIdx = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+                val pathIdx = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.RELATIVE_PATH)
+                val addedIdx = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
+                val out = ArrayList<MediaVideo>()
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idIdx)
+                    val uri = Uri.withAppendedPath(collection, id.toString()).toString()
+                    out += MediaVideo(
+                        uriString = uri,
+                        displayName = cursor.getString(nameIdx).orEmpty(),
+                        relativePath = cursor.getString(pathIdx).orEmpty(),
+                        dateAddedMs = cursor.getLong(addedIdx) * 1000L
+                    )
+                }
+                out
+            } ?: emptyList()
+        }.getOrDefault(emptyList())
+    }
+
     private fun guessDisplayName(sourceUri: String): String {
         val path = Uri.parse(sourceUri).lastPathSegment.orEmpty()
         return path.ifBlank { sourceUri.takeLast(48) }
@@ -131,6 +252,7 @@ class SourceHistoryStore(context: Context) {
                     put("displayName", e.displayName)
                     put("completedAtMs", e.completedAtMs)
                     put("sourceDeleted", e.sourceDeleted)
+                    put("heuristicMatch", e.heuristicMatch)
                 }
             )
         }
@@ -141,5 +263,8 @@ class SourceHistoryStore(context: Context) {
         private const val PREFS = "source_history"
         private const val KEY = "entries_json"
         private const val MAX_ENTRIES = 200
+        private const val COMPILATION_MAKER_RELATIVE_PATH = "Movies/CompilationMaker"
+        private const val DOWNLOAD_RELATIVE_PATH = "Download"
+        private const val DOWNLOADS_RELATIVE_PATH = "Downloads"
     }
 }
