@@ -45,6 +45,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Secondary launcher entry for batch cleanup of original videos after successful export. -->
+        <activity
+            android:name=".CleanupActivity"
+            android:exported="true"
+            android:label="CM Cleanup"
+            android:icon="@drawable/ic_launcher">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
     </application>
 
 </manifest>

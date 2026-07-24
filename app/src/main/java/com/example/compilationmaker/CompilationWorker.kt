@@ -297,6 +297,40 @@ class CompilationWorker(
             }
             setProgressCompat(terminalPhase, completionMessage, 100, fallbackUsed, terminalState)
             setForegroundCompat(terminalPhase, completionMessage, 100, fallbackUsed, terminalState)
+
+            // Best-effort: record successful pair + tryDeleteSource. Never fail the job.
+            runCatching {
+                val history = SourceHistoryStore(applicationContext)
+                val displayName = history.resolveDisplayName(sourceUriRaw)
+                history.recordSuccess(
+                    sourceUri = sourceUriRaw,
+                    outputPath = verifiedOutput.file.absolutePath,
+                    outputUri = verifiedOutput.uri,
+                    displayName = displayName
+                )
+                val deleted = history.tryDeleteSource(sourceUriRaw)
+                if (deleted) {
+                    AppLog.i(
+                        applicationContext,
+                        "CompilationWorker",
+                        "[worker] source auto-deleted after verified success: $sourceUriRaw"
+                    )
+                } else {
+                    AppLog.w(
+                        applicationContext,
+                        "CompilationWorker",
+                        "[worker] source auto-delete skipped or failed (non-fatal): $sourceUriRaw"
+                    )
+                }
+            }.onFailure { err ->
+                AppLog.w(
+                    applicationContext,
+                    "CompilationWorker",
+                    "[worker] SourceHistoryStore post-success failed (non-fatal)",
+                    err
+                )
+            }
+
             AppLog.i(
                 applicationContext,
                 "CompilationWorker",
