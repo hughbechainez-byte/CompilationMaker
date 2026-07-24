@@ -75,7 +75,7 @@ internal class CanonicalScannerBridge(private val context: Context) {
                     heightFraction = scanWindow.heightPercent
                 ),
                 profile = profile,
-                // Fast / Turbo / Quick all share the tighter 384px coarse path.
+                // Fast / Turbo / Quick share the tighter 320px coarse path on high-end devices.
                 targetFrameWidthPx = when {
                     quickMode || fastMode -> CANONICAL_FAST_MODE_FRAME_WIDTH_PX
                     else -> 640
@@ -128,14 +128,16 @@ internal fun canonicalQuickModeParallelism(context: Context): Int {
         (power?.currentThermalStatus ?: PowerManager.THERMAL_STATUS_NONE) >= PowerManager.THERMAL_STATUS_SEVERE
     } else false
     if (thermalSevere) return 1
+    // Pixel 10 Pro / Tensor G5 class: use more independent decoder+OCR lanes while cool.
     return when {
-        cores >= 8 -> 3
+        cores >= 8 -> 6
+        cores >= 6 -> 4
         cores >= 4 -> 2
         else -> 1
     }
 }
 
-private const val CANONICAL_FAST_MODE_FRAME_WIDTH_PX = 384
+private const val CANONICAL_FAST_MODE_FRAME_WIDTH_PX = 320
 
 internal fun mapCanonicalProgress(progress: DetectionProgress): CanonicalScanProgress {
     val state = when (progress.phase) {
