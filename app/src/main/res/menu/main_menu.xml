@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item
+        android:id="@+id/action_cleanup_originals"
+        android:title="Clean up originals"
+        android:orderInCategory="100"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_pixel10_speed_info"
+        android:title="Pixel 10 Pro speed modes (info)"
+        android:orderInCategory="110"
+        app:showAsAction="never" />
+</menu>
