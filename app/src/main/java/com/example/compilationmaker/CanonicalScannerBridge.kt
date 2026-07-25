@@ -116,7 +116,7 @@ internal fun canonicalProfileFor(
 internal fun canonicalProfileLabel(profile: DetectorScanProfile): String = when (profile) {
     DetectorScanProfile.FAST -> "Canonical Fast PTS (30s)"
     DetectorScanProfile.MONOTONIC_3_MIN -> "Monotonic Turbo PTS (3m adaptive, persistent 1→N)"
-    DetectorScanProfile.QUICK_5_MIN -> "Experimental Quick Mode (5m adaptive, parallel hardware lanes)"
+    DetectorScanProfile.QUICK_5_MIN -> "Pixel 10 Pro [LOW RISK]: Parallel lanes (QUICK 5m)"
     DetectorScanProfile.BALANCED -> "Canonical Balanced PTS (10s)"
     DetectorScanProfile.PRECISE -> "Canonical Precise PTS (3s)"
 }
