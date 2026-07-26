@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.util.Rational
 import android.view.Menu
 import android.view.MenuItem
@@ -44,14 +45,10 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Optimized MainActivity (0.17.38)
- * - Pixel 10 Pro LOW / MEDIUM RISK scan profiles labeled
- * - Menu: Clean up originals + Pixel speed info
- * - Post-success delete original prompt
- * - PiP live progress banner
+ * Optimized MainActivity (0.17.38 / versionCode 70)
  * - RESTORED: Select Video + ROI preview (VideoView, frame capture, drag overlay)
- * - RESTORED: runtime permission request (READ_MEDIA_VIDEO / POST_NOTIFICATIONS)
- * Production path = CanonicalScannerBridge + Media3 + WorkManager
+ * - RESTORED: runtime permission request
+ * - Production path = CanonicalScannerBridge + Media3 + WorkManager
  */
 class MainActivity : AppCompatActivity() {
 
@@ -65,12 +62,10 @@ class MainActivity : AppCompatActivity() {
     private val compilationJobStore by lazy { CompilationJobStore(this) }
     private val checkpointProfiles = compilationScanProfiles()
 
-    // ROI / preview state
     private var previewBitmap: Bitmap? = null
     private var selectedPreviewMs = 0
     private var isScrubbing = false
     private var selectedVideoRotationDegrees = 0
-    private var isUpdatingRoiFields = false
     private var roiTouchMode = RoiTouchMode.NONE
     private var roiTouchStartX = 0f
     private var roiTouchStartY = 0f
@@ -81,11 +76,12 @@ class MainActivity : AppCompatActivity() {
     private val roiCornerHitPx = 28f
     private val defaultScanWindow = ScanWindow(0.0f, 0.8f, 0.10f, 0.30f)
     private val previewHandler = Handler(Looper.getMainLooper())
+    private var frameCaptureInFlight = false
 
     private val permissionRequestLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
             if (result.values.any { it }) {
-                binding.roiStatusText.text = "Permissions granted"
+                binding.roiStatusText.text = "Permissions granted — select a video"
             } else {
                 binding.roiStatusText.text = "Video access permission is still required"
             }
@@ -101,7 +97,6 @@ class MainActivity : AppCompatActivity() {
                     Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
             } catch (_: SecurityException) {
-                // optional for this session
             }
             onVideoSelected(picked)
         }
@@ -111,7 +106,7 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         backgroundStatusBanner = binding.backgroundStatusBanner
-        setupScanSpeedSpinner()
+        setupSpinners()
         wirePreviewUi()
         binding.selectButton.setOnClickListener { launchVideoPicker() }
         binding.processButton.setOnClickListener {
@@ -119,14 +114,19 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Pick a video first", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            if (previewBitmap == null) {
+                Toast.makeText(this, "Capture a frame and set ROI first", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             Toast.makeText(
                 this,
-                "Video + ROI ready. Full pipeline uses WorkManager (see restoreActiveCompilationWork).",
+                "Video + ROI ready. Full pipeline uses WorkManager.",
                 Toast.LENGTH_LONG
             ).show()
         }
         requestPermissionsIfNeeded()
         restoreActiveCompilationWork()
+        binding.roiStatusText.text = "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) — select a video"
     }
 
     override fun onPause() {
@@ -174,9 +174,28 @@ class MainActivity : AppCompatActivity() {
         selectedVideoUri = picked
         loadSelectedVideoMetadata(picked)
         binding.selectedVideo.text = picked.toString()
-        binding.roiStatusText.text = "Video selected — scrub and capture a frame for ROI"
+        binding.roiStatusText.text = "Video selected — loading preview + frame…"
         Toast.makeText(this, "Video selected", Toast.LENGTH_SHORT).show()
         setupVideoPreview(picked)
+        // Immediate capture fallback (does not wait for VideoView prepared)
+        captureFrame(0)
+    }
+
+    private fun setupSpinners() {
+        binding.scanSpeedPicker.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            checkpointProfiles.map { it.label }
+        )
+        val lowRiskIndex = checkpointProfiles.indexOfFirst { it.scannerProfileId == "QUICK_5_MIN" }
+        if (lowRiskIndex >= 0) binding.scanSpeedPicker.setSelection(lowRiskIndex)
+
+        binding.transitionStylePicker.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            listOf("Instant cuts", "Gradual transitions")
+        )
+        binding.transitionStylePicker.setSelection(1)
     }
 
     private fun wirePreviewUi() {
@@ -229,8 +248,14 @@ class MainActivity : AppCompatActivity() {
             selectedPreviewMs = 0
             binding.previewSeekBar.progress = 0
             startPreviewProgressUpdates()
-            // Auto-capture first frame so second box is immediately usable
-            captureFrame(0)
+            if (previewBitmap == null) captureFrame(0)
+        }
+
+        binding.videoPreview.setOnErrorListener { _, what, extra ->
+            Log.e(logTag, "VideoView error what=$what extra=$extra")
+            binding.roiStatusText.text = "Preview error ($what/$extra) — try Capture frame"
+            binding.captureFrameButton.isEnabled = true
+            true
         }
 
         binding.videoPreview.setOnCompletionListener {
@@ -331,28 +356,34 @@ class MainActivity : AppCompatActivity() {
         previewBitmap = null
         binding.frameImage.setImageDrawable(null)
         binding.previewSeekBar.isEnabled = false
-        binding.captureFrameButton.isEnabled = false
+        binding.captureFrameButton.isEnabled = true
         binding.previewSeekBar.progress = 0
         selectedPreviewMs = 0
         stopPreviewProgressUpdates()
-        binding.videoPreview.setVideoURI(uri)
-        binding.videoPreview.requestFocus()
-        binding.videoPreview.start()
-        binding.videoPreview.pause()
+        try {
+            binding.videoPreview.setVideoURI(uri)
+            binding.videoPreview.requestFocus()
+            binding.videoPreview.start()
+            binding.videoPreview.pause()
+        } catch (e: Exception) {
+            Log.e(logTag, "setVideoURI failed", e)
+            binding.roiStatusText.text = "Preview failed: ${e.message}"
+        }
     }
 
     private fun captureFrame(positionMs: Int) {
         val source = selectedVideoUri ?: return
-        val duration = max(1, binding.previewSeekBar.max)
-        val safePosition = positionMs.coerceIn(0, duration)
+        if (frameCaptureInFlight) return
+        frameCaptureInFlight = true
+        val safePosition = max(0, positionMs)
         lifecycleScope.launch {
             binding.roiStatusText.text = "Capturing frame at ${safePosition}ms…"
             val frame = withContext(Dispatchers.IO) {
                 val retriever = MediaMetadataRetriever()
                 try {
                     retriever.setDataSource(this@MainActivity, source)
-                    val targetW = max(640, binding.frameImage.width).coerceAtMost(1280)
-                    val targetH = max(360, binding.frameImage.height).coerceAtMost(720)
+                    val targetW = 960
+                    val targetH = 540
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                         retriever.getScaledFrameAtTime(
                             safePosition * 1000L,
@@ -369,12 +400,17 @@ class MainActivity : AppCompatActivity() {
                             MediaMetadataRetriever.OPTION_CLOSEST_SYNC
                         )
                     }
+                } catch (e: Exception) {
+                    Log.e(logTag, "Frame capture failed at ${safePosition}ms", e)
+                    null
                 } finally {
-                    retriever.release()
+                    runCatching { retriever.release() }
                 }
             }
+            frameCaptureInFlight = false
             if (frame == null) {
-                binding.roiStatusText.text = "Unable to capture frame for ROI"
+                binding.roiStatusText.text = "Unable to capture frame — tap Capture frame"
+                binding.captureFrameButton.isEnabled = true
                 return@launch
             }
             val normalized = normalizeBitmapForRoi(frame, selectedVideoRotationDegrees)
@@ -385,7 +421,9 @@ class MainActivity : AppCompatActivity() {
             selectedPreviewMs = safePosition
             binding.roiOverlay.visibility = View.VISIBLE
             updateRoiOverlay()
-            binding.roiStatusText.text = "Captured frame. Drag box to set ROI · corner to resize"
+            binding.captureFrameButton.isEnabled = true
+            binding.roiStatusText.text = "Frame ready. Drag box for ROI · corner to resize"
+            Log.i(logTag, "ROI frame set ${normalized.width}x${normalized.height} @${safePosition}ms")
         }
     }
 
@@ -396,10 +434,11 @@ class MainActivity : AppCompatActivity() {
             selectedVideoRotationDegrees =
                 ((retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
                     ?.toIntOrNull() ?: 0) % 360 + 360) % 360
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(logTag, "Metadata read failed", e)
             selectedVideoRotationDegrees = 0
         } finally {
-            retriever.release()
+            runCatching { retriever.release() }
         }
     }
 
@@ -414,15 +453,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setScanAreaFromPercents(x: Float, y: Float, w: Float, h: Float) {
-        isUpdatingRoiFields = true
-        try {
-            binding.scanAreaX.setText(String.format(Locale.US, "%.2f", x.coerceIn(0f, 1f) * 100f))
-            binding.scanAreaY.setText(String.format(Locale.US, "%.2f", y.coerceIn(0f, 1f) * 100f))
-            binding.scanAreaWidth.setText(String.format(Locale.US, "%.2f", w.coerceIn(0.01f, 1f) * 100f))
-            binding.scanAreaHeight.setText(String.format(Locale.US, "%.2f", h.coerceIn(0.01f, 1f) * 100f))
-        } finally {
-            isUpdatingRoiFields = false
-        }
+        binding.scanAreaX.setText(String.format(Locale.US, "%.2f", x.coerceIn(0f, 1f) * 100f))
+        binding.scanAreaY.setText(String.format(Locale.US, "%.2f", y.coerceIn(0f, 1f) * 100f))
+        binding.scanAreaWidth.setText(String.format(Locale.US, "%.2f", w.coerceIn(0.01f, 1f) * 100f))
+        binding.scanAreaHeight.setText(String.format(Locale.US, "%.2f", h.coerceIn(0.01f, 1f) * 100f))
     }
 
     private fun readScanWindow(): ScanWindow {
@@ -523,21 +557,13 @@ class MainActivity : AppCompatActivity() {
         super.onUserLeaveHint()
     }
 
-    private fun setupScanSpeedSpinner() {
-        val labels = checkpointProfiles.map { it.label }.toTypedArray()
-        binding.scanSpeedPicker.adapter =
-            ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
-        val lowRiskIndex = checkpointProfiles.indexOfFirst { it.scannerProfileId == "QUICK_5_MIN" }
-        if (lowRiskIndex >= 0) binding.scanSpeedPicker.setSelection(lowRiskIndex)
-    }
-
     private fun showPixelInfoDialog() {
         AlertDialog.Builder(this)
             .setTitle("Pixel 10 Pro speed modes")
             .setMessage(
-                "LOW RISK: Parallel OCR lanes (QUICK 5m) — more concurrent decoder/OCR work while thermal status is cool.\n\n" +
-                    "MEDIUM RISK: MediaCodec + lean parallel (FAST 30s) — prefers hardware decode path + reduced frame width for higher throughput.\n\n" +
-                    "Both preserve the existing PTS-aware transition accuracy and WorkManager pipeline."
+                "LOW RISK: Parallel OCR lanes (QUICK 5m)\n\n" +
+                    "MEDIUM RISK: MediaCodec + lean parallel (FAST 30s)\n\n" +
+                    "Both preserve PTS-aware accuracy and WorkManager pipeline."
             )
             .setPositiveButton("OK", null)
             .show()
