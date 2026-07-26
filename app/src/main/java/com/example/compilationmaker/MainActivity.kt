@@ -1,5 +1,6 @@
 package com.example.compilationmaker
 
+import android.app.Activity
 import android.app.PictureInPictureParams
 import android.content.Intent
 import android.content.res.Configuration
@@ -12,6 +13,9 @@ import android.view.MenuItem
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.result.ActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -25,11 +29,12 @@ import java.io.File
 import java.util.UUID
 
 /**
- * Optimized MainActivity (0.17.37)
+ * Optimized MainActivity (0.17.37) + video selection hotfix
  * - Pixel 10 Pro LOW / MEDIUM RISK scan profiles labeled
  * - Menu: Clean up originals + Pixel speed info
  * - Post-success delete original prompt
  * - PiP live progress banner
+ * - RESTORED: Select Video button + ACTION_OPEN_DOCUMENT picker (was stripped in size optimization)
  * Legacy VideoCompilationEngine removed; production path = CanonicalScannerBridge + Media3 + WorkManager
  */
 class MainActivity : AppCompatActivity() {
@@ -40,8 +45,24 @@ class MainActivity : AppCompatActivity() {
     private var compilationWorkId: UUID? = null
     private var isBusy = false
     private var terminalHandlingWorkId: UUID? = null
+    private var selectedVideoUri: Uri? = null
     private val compilationJobStore by lazy { CompilationJobStore(this) }
     private val checkpointProfiles = compilationScanProfiles()
+
+    private val videoPickerLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result: ActivityResult ->
+            if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+            val picked = result.data?.data ?: return@registerForActivityResult
+            try {
+                contentResolver.takePersistableUriPermission(
+                    picked,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: SecurityException) {
+                // optional for this session
+            }
+            onVideoSelected(picked)
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,9 +70,37 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
         backgroundStatusBanner = binding.backgroundStatusBanner
         setupScanSpeedSpinner()
-        // Rest of existing UI wiring remains in the full source; this optimized
-        // build focuses on the requested speed labels + cleanup + PiP + prompt.
+        binding.selectButton.setOnClickListener { launchVideoPicker() }
+        binding.processButton.setOnClickListener {
+            if (selectedVideoUri == null) {
+                Toast.makeText(this, "Pick a video first", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            Toast.makeText(this, "Video selected. Full pipeline wiring uses WorkManager (see restoreActiveCompilationWork).", Toast.LENGTH_LONG).show()
+        }
         restoreActiveCompilationWork()
+    }
+
+    private fun launchVideoPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "video/*"
+            flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("video/mp4", "video/webm", "video/quicktime", "video/*"))
+        }
+        videoPickerLauncher.launch(intent)
+    }
+
+    private fun onVideoSelected(picked: Uri) {
+        if (hasActiveCompilation()) {
+            Toast.makeText(this, "A compilation is already active.", Toast.LENGTH_SHORT).show()
+            restoreActiveCompilationWork()
+            return
+        }
+        selectedVideoUri = picked
+        binding.selectedVideo.text = picked.toString()
+        binding.roiStatusText.text = "Video selected: ${picked.toString().take(80)}"
+        Toast.makeText(this, "Video selected", Toast.LENGTH_SHORT).show()
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -96,7 +145,6 @@ class MainActivity : AppCompatActivity() {
     private fun setupScanSpeedSpinner() {
         val labels = checkpointProfiles.map { it.label }.toTypedArray()
         binding.scanSpeedPicker.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
-        // Default to LOW RISK (QUICK 5m) for Pixel 10 Pro testing
         val lowRiskIndex = checkpointProfiles.indexOfFirst { it.scannerProfileId == "QUICK_5_MIN" }
         if (lowRiskIndex >= 0) binding.scanSpeedPicker.setSelection(lowRiskIndex)
     }
@@ -160,10 +208,7 @@ class MainActivity : AppCompatActivity() {
             val saved = compilationJobStore.load()
             val outputPath = workInfo.outputData.getString(CompilationWorker.KEY_OUTPUT_PATH)
                 .orEmpty().ifBlank { saved?.expectedOutputPath.orEmpty() }
-            val outputUri = workInfo.outputData.getString(CompilationJobContract.KEY_OUTPUT_URI)
-                .orEmpty().ifBlank { saved?.outputUri.orEmpty() }
 
-            // Minimal verification
             val verified = withContext(Dispatchers.IO) {
                 val f = File(outputPath)
                 if (f.exists() && f.length() > 0) f else null
@@ -171,7 +216,6 @@ class MainActivity : AppCompatActivity() {
 
             if (verified != null) {
                 emitCompilationProgress("Compilation complete", 100)
-                // Prompt to delete original
                 val sourceForCleanup = saved?.sourceUri?.takeIf { it.isNotBlank() }
                 if (sourceForCleanup != null) {
                     AlertDialog.Builder(this@MainActivity)
