@@ -31,8 +31,8 @@ android {
         applicationId = "com.hughbechainez.compilationmaker"
         minSdk = 24
         targetSdk = 35
-        versionCode = 70
-        versionName = "0.17.38"
+        versionCode = 71
+        versionName = "0.17.39"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testBuildType = "release"
 
