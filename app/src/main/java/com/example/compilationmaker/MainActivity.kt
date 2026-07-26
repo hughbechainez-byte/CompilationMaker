@@ -32,12 +32,18 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import androidx.work.workDataOf
 import com.example.compilationmaker.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.util.Locale
 import java.util.UUID
@@ -45,10 +51,12 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Optimized MainActivity (0.17.38 / versionCode 70)
+ * Optimized MainActivity (0.17.39 / versionCode 71)
  * - RESTORED: Select Video + ROI preview (VideoView, frame capture, drag overlay)
  * - RESTORED: runtime permission request
  * - Production path = CanonicalScannerBridge + Media3 + WorkManager
+ * - FIX: processButton now actually enqueues CompilationWorker (was toast-only stub)
+ * - FIX: VideoView lifecycle no longer tears surface before prepared/start
  */
 class MainActivity : AppCompatActivity() {
 
@@ -77,6 +85,7 @@ class MainActivity : AppCompatActivity() {
     private val defaultScanWindow = ScanWindow(0.0f, 0.8f, 0.10f, 0.30f)
     private val previewHandler = Handler(Looper.getMainLooper())
     private var frameCaptureInFlight = false
+    private var videoPrepared = false
 
     private val permissionRequestLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -118,11 +127,12 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Capture a frame and set ROI first", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            Toast.makeText(
-                this,
-                "Video + ROI ready. Full pipeline uses WorkManager.",
-                Toast.LENGTH_LONG
-            ).show()
+            if (hasActiveCompilation()) {
+                Toast.makeText(this, "Compilation already running", Toast.LENGTH_SHORT).show()
+                restoreActiveCompilationWork()
+                return@setOnClickListener
+            }
+            startCompilation()
         }
         requestPermissionsIfNeeded()
         restoreActiveCompilationWork()
@@ -132,12 +142,22 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         stopPreviewProgressUpdates()
-        runCatching { binding.videoPreview.stopPlayback() }
+        // Keep the player object; only pause so surface can re-attach on resume
+        runCatching { binding.videoPreview.pause() }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (videoPrepared && selectedVideoUri != null && !hasActiveCompilation()) {
+            // Do not auto-start; user controls seek/capture
+            startPreviewProgressUpdates()
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         stopPreviewProgressUpdates()
+        runCatching { binding.videoPreview.stopPlayback() }
         previewBitmap?.recycle()
         previewBitmap = null
     }
@@ -172,6 +192,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         selectedVideoUri = picked
+        videoPrepared = false
         loadSelectedVideoMetadata(picked)
         binding.selectedVideo.text = picked.toString()
         binding.roiStatusText.text = "Video selected — loading preview + frame…"
@@ -241,6 +262,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.videoPreview.setOnPreparedListener { mediaPlayer ->
             if (hasActiveCompilation()) return@setOnPreparedListener
+            videoPrepared = true
             val duration = max(1, mediaPlayer.duration)
             binding.previewSeekBar.max = duration
             binding.previewSeekBar.isEnabled = true
@@ -248,11 +270,15 @@ class MainActivity : AppCompatActivity() {
             selectedPreviewMs = 0
             binding.previewSeekBar.progress = 0
             startPreviewProgressUpdates()
+            // Pause immediately after prepare so surface stays alive without auto-play noise
+            runCatching { mediaPlayer.pause() }
             if (previewBitmap == null) captureFrame(0)
+            Log.i(logTag, "VideoView prepared duration=${duration}ms")
         }
 
         binding.videoPreview.setOnErrorListener { _, what, extra ->
             Log.e(logTag, "VideoView error what=$what extra=$extra")
+            videoPrepared = false
             binding.roiStatusText.text = "Preview error ($what/$extra) — try Capture frame"
             binding.captureFrameButton.isEnabled = true
             true
@@ -359,12 +385,14 @@ class MainActivity : AppCompatActivity() {
         binding.captureFrameButton.isEnabled = true
         binding.previewSeekBar.progress = 0
         selectedPreviewMs = 0
+        videoPrepared = false
         stopPreviewProgressUpdates()
         try {
             binding.videoPreview.setVideoURI(uri)
             binding.videoPreview.requestFocus()
+            // Do NOT call start() then pause() race; let onPrepared handle pause
+            // Some devices need a single start to force surface attachment
             binding.videoPreview.start()
-            binding.videoPreview.pause()
         } catch (e: Exception) {
             Log.e(logTag, "setVideoURI failed", e)
             binding.roiStatusText.text = "Preview failed: ${e.message}"
@@ -518,6 +546,91 @@ class MainActivity : AppCompatActivity() {
         previewHandler.removeCallbacks(previewProgressUpdater)
     }
 
+    /** Enqueue the real compilation pipeline (scan → export). */
+    private fun startCompilation() {
+        val sourceUri = selectedVideoUri ?: return
+        val window = readScanWindow()
+        val profileIndex = binding.scanSpeedPicker.selectedItemPosition.coerceIn(0, checkpointProfiles.lastIndex)
+        val profile = checkpointProfiles[profileIndex]
+        val transitionOrdinal = binding.transitionStylePicker.selectedItemPosition.coerceIn(0, 1)
+
+        val scanWindowJson = JSONObject().apply {
+            put("xPercent", window.xPercent.toDouble())
+            put("yPercent", window.yPercent.toDouble())
+            put("widthPercent", window.widthPercent.toDouble())
+            put("heightPercent", window.heightPercent.toDouble())
+        }.toString()
+
+        val outputDir = File(getExternalFilesDir(null), "compilations").also {
+            if (!it.exists()) it.mkdirs()
+        }
+        val expectedOutput = File(outputDir, "comp-${System.currentTimeMillis()}.mp4")
+
+        val proposedId = UUID.randomUUID()
+        val inputData = workDataOf(
+            CompilationWorker.KEY_SOURCE_URI to sourceUri.toString(),
+            CompilationWorker.KEY_SCAN_WINDOW to scanWindowJson,
+            CompilationWorker.KEY_SCAN_MODE to profile.mode.ordinal,
+            CompilationWorker.KEY_CHECKPOINT_INTERVAL_MS to profile.frameStepMs,
+            CompilationWorker.KEY_SCANNER_PROFILE_ID to (profile.scannerProfileId ?: ""),
+            CompilationWorker.KEY_QUALITY_ORDINAL to ExportQuality.Medium.ordinal,
+            CompilationWorker.KEY_FORMAT_ORDINAL to ExportFormat.Mp4.ordinal,
+            CompilationWorker.KEY_TRANSITION_STYLE_ORDINAL to transitionOrdinal,
+            CompilationWorker.KEY_VIDEO_ROTATION to selectedVideoRotationDegrees,
+            CompilationJobContract.KEY_EXPECTED_OUTPUT_PATH to expectedOutput.absolutePath
+        )
+
+        val request = OneTimeWorkRequestBuilder<CompilationWorker>()
+            .setId(proposedId)
+            .setInputData(inputData)
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.NOT_REQUIRED)
+                    .build()
+            )
+            .addTag("compilation")
+            .build()
+
+        val now = System.currentTimeMillis()
+        val record = CompilationJobRecord(
+            workId = proposedId.toString(),
+            uniqueWorkName = CompilationJobContract.UNIQUE_WORK_NAME,
+            sourceUri = sourceUri.toString(),
+            expectedOutputPath = expectedOutput.absolutePath,
+            state = CompilationPipelineState.QUEUED,
+            stage = "queued",
+            progressPercent = 0,
+            progressMessage = "Queued for scan",
+            createdAtMs = now,
+            updatedAtMs = now,
+            sourcePermissionPersisted = true,
+            settings = CompilationJobSettings(
+                scanWindowJson = scanWindowJson,
+                scanModeOrdinal = profile.mode.ordinal,
+                checkpointIntervalMs = profile.frameStepMs,
+                qualityOrdinal = ExportQuality.Medium.ordinal,
+                formatOrdinal = ExportFormat.Mp4.ordinal,
+                transitionStyleOrdinal = transitionOrdinal,
+                videoRotation = selectedVideoRotationDegrees
+            )
+        )
+        compilationJobStore.save(record)
+
+        WorkManager.getInstance(this).enqueueUniqueWork(
+            CompilationJobContract.UNIQUE_WORK_NAME,
+            ExistingWorkPolicy.REPLACE,
+            request
+        )
+
+        compilationWorkId = proposedId
+        observeCompilationWork(proposedId)
+        isBusy = true
+        emitCompilationProgress("Queued — scanning will start shortly", 0)
+        binding.roiStatusText.text = "Compilation queued · scanning starts in background"
+        Toast.makeText(this, "Scanning started (background)", Toast.LENGTH_SHORT).show()
+        Log.i(logTag, "Enqueued CompilationWorker id=$proposedId profile=${profile.scannerProfileId} window=$scanWindowJson")
+    }
+
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.main_menu, menu)
         return true
@@ -604,6 +717,10 @@ class MainActivity : AppCompatActivity() {
             WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
                 isBusy = false
                 backgroundStatusBanner.visibility = View.GONE
+                val err = workInfo.outputData.getString(CompilationWorker.KEY_ERROR_MESSAGE)
+                if (!err.isNullOrBlank()) {
+                    binding.roiStatusText.text = "Failed: $err"
+                }
             }
             else -> {}
         }
