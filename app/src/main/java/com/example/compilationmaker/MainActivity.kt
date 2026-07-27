@@ -271,6 +271,7 @@ class MainActivity : AppCompatActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, true)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        installCrashRecorder(this)
         setUpUi()
         ensureProgressNotificationChannel()
         ensureUpdateNotificationChannel()
@@ -821,6 +822,10 @@ class MainActivity : AppCompatActivity() {
             workManager.enqueueUniqueWork(compilationWorkName, enqueuePolicy, request).result.get()
             val unique = workManager.getWorkInfosForUniqueWork(compilationWorkName).get()
             unique.firstOrNull { isActiveWorkManagerState(it.state) }
+                ?: run {
+                    val requested = workManager.getWorkInfoById(request.id).get()
+                    if (requested?.state?.let(::isActiveWorkManagerState) == true) requested else null
+                }
                 ?: workManager.getWorkInfoById(request.id).get()
         } ?: throw IllegalStateException("WorkManager did not retain the queued compilation")
 
@@ -842,6 +847,22 @@ class MainActivity : AppCompatActivity() {
                 logTag,
                 "KEEP attached existing UUID=${accepted.id}; generated UUID=${request.id} was not accepted"
             )
+            emitLogStatus("Compilation queue returned ${accepted.id}, not ${request.id}. Continuing with active queued work request.")
+        }
+
+        if (accepted.id != request.id && previousRecord == null && accepted.state.let { terminalState ->
+                terminalState == WorkInfo.State.SUCCEEDED ||
+                    terminalState == WorkInfo.State.FAILED ||
+                    terminalState == WorkInfo.State.CANCELLED
+            }) {
+            currentPipelineState = CompilationPipelineState.FAILED
+            emitCompilationProgress(
+                "Unable to start new compilation queue. The queued request was already terminal.",
+                100
+            )
+            setUiBusy(false)
+            isBusy = false
+            return
         }
         AppLog.i(
             this@MainActivity,
@@ -5989,9 +6010,9 @@ internal data class ScanProfile(
 )
 
 internal fun compilationScanProfiles(): Array<ScanProfile> = arrayOf(
-    ScanProfile("Canonical Fast PTS (30s)", 30_000L, ScanMode.StableCheckpoint, "FAST"),
-    ScanProfile("Monotonic Turbo PTS (3m adaptive, persistent 1→N)", 180_000L, ScanMode.StableCheckpoint, "MONOTONIC_3_MIN"),
-    ScanProfile("Experimental Quick Mode (5m adaptive + parallel hardware)", 300_000L, ScanMode.StableCheckpoint, "QUICK_5_MIN"),
+    ScanProfile("Medium-risk pixel scanner (monotonic 3m)", 180_000L, ScanMode.StableCheckpoint, "MONOTONIC_3_MIN"),
+    ScanProfile("Low-risk pixel scanner (FAST 30s)", 30_000L, ScanMode.StableCheckpoint, "FAST"),
+    ScanProfile("Medium-risk pixel scanner (quick 5m experimental)", 300_000L, ScanMode.StableCheckpoint, "QUICK_5_MIN"),
     ScanProfile("Canonical Balanced PTS (10s)", 10_000L, ScanMode.StableCheckpoint, "BALANCED"),
     ScanProfile("Canonical Precise PTS (3s)", 3_000L, ScanMode.StableCheckpoint, "PRECISE"),
     ScanProfile("Dense (125ms) [debug]", 125L, ScanMode.Experimental)

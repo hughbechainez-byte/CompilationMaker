@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.28",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.28",
+  "version": "v0.17.30",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.30",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.28/CompilationMaker-v0.17.28.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.30/CompilationMaker-v0.17.30.apk"
   },
-  "notes": "## Faster exact exports\n\n- Keeps exact H.264 visual clip boundaries while copying compatible AAC samples instead of re-encoding them.\n- Video A API 35 QA: 10 confirmed transitions, ten clips, a 400-second output, and 89.011 seconds end-to-end (70.793 seconds faster than v0.17.27).",
+  "notes": "## Compilation start and logging fix + debug scanner lanes\n\n- Fixes queue attachment and startup path so compilation can begin consistently after enqueue, and re-enables crash log persistence from app launch.\n- Exposes low-risk and medium-risk experimental pixel scanners as explicit scan profile options and keeps existing stable/exact profiles for production use.\n- No API/manifest behavior changes.",
   "updates": [
+    {
+      "version": "v0.17.30",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.30",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.30/CompilationMaker-v0.17.30.apk",
+      "notes": "## Compilation start and logging fix + debug scanner lanes\n\n- Fixes queue attachment and startup path so compilation can begin consistently after enqueue, and re-enables crash log persistence from app launch.\n- Exposes low-risk and medium-risk experimental pixel scanners as explicit scan profile options and keeps existing stable/exact profiles for production use.\n- No API/manifest behavior changes."
+    },
     {
       "version": "v0.17.28",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.28",

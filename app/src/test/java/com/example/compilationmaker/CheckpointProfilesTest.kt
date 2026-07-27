@@ -9,23 +9,23 @@ import javax.xml.parsers.DocumentBuilderFactory
 
 class CheckpointProfilesTest {
     @Test
-    fun canonicalPtsProfilesAreRestoredInOrder() {
+    fun monotonicTurboIsTheDefaultCanonicalPtsProfile() {
         val profiles = compilationScanProfiles()
         val canonical = profiles.filter { it.mode == ScanMode.StableCheckpoint }
 
         assertEquals(
             listOf(
-                "Canonical Fast PTS (30s)",
-                "Monotonic Turbo PTS (3m adaptive, persistent 1→N)",
-                "Experimental Quick Mode (5m adaptive + parallel hardware)",
+                "Medium-risk pixel scanner (monotonic 3m)",
+                "Low-risk pixel scanner (FAST 30s)",
+                "Medium-risk pixel scanner (quick 5m experimental)",
                 "Canonical Balanced PTS (10s)",
                 "Canonical Precise PTS (3s)"
             ),
             canonical.map { it.label }
         )
-        assertEquals(listOf(30_000L, 180_000L, 300_000L, 10_000L, 3_000L), canonical.map { it.frameStepMs })
+        assertEquals(listOf(180_000L, 30_000L, 300_000L, 10_000L, 3_000L), canonical.map { it.frameStepMs })
         assertEquals(
-            listOf("FAST", "MONOTONIC_3_MIN", "QUICK_5_MIN", "BALANCED", "PRECISE"),
+            listOf("MONOTONIC_3_MIN", "FAST", "QUICK_5_MIN", "BALANCED", "PRECISE"),
             canonical.map { it.scannerProfileId }
         )
         assertTrue(canonical.all { it.scannerProfileId != null })
