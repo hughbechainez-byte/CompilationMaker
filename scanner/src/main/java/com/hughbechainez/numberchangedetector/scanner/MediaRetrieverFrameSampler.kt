@@ -39,7 +39,8 @@ class MediaRetrieverFrameSampler(
     override suspend fun frameAt(
         timeMs: Long,
         targetWidthPx: Int,
-        exactPresentationTime: Boolean
+        exactPresentationTime: Boolean,
+        keyframeOnly: Boolean
     ): FrameSample? = withContext(Dispatchers.IO) {
         val safeTimeMs = timeMs.coerceIn(0L, metadata.durationMs)
         if (exactPresentationTime && safeTimeMs !in enumeratedPresentationTimesMs) {
@@ -50,15 +51,20 @@ class MediaRetrieverFrameSampler(
         val width = targetWidthPx.coerceAtLeast(64)
         val height = max(1, (sourceHeight.toFloat() * width / sourceWidth).toInt())
         val raw = runCatching {
+            val option = if (keyframeOnly) {
+                MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+            } else {
+                MediaMetadataRetriever.OPTION_CLOSEST
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                 retriever.getScaledFrameAtTime(
                     safeTimeMs * 1_000L,
-                    MediaMetadataRetriever.OPTION_CLOSEST,
+                    option,
                     width,
                     height
-                ) ?: retriever.getFrameAtTime(safeTimeMs * 1_000L, MediaMetadataRetriever.OPTION_CLOSEST)
+                ) ?: retriever.getFrameAtTime(safeTimeMs * 1_000L, option)
             } else {
-                retriever.getFrameAtTime(safeTimeMs * 1_000L, MediaMetadataRetriever.OPTION_CLOSEST)
+                retriever.getFrameAtTime(safeTimeMs * 1_000L, option)
             }
         }.getOrNull() ?: return@withContext null
 

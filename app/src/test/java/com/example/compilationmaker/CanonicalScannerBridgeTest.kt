@@ -66,7 +66,7 @@ class CanonicalScannerBridgeTest {
         val report = canonicalReportJson(result, mapped, savedAtMs = 123L)
 
         assertEquals("v1-sparse-pts-ocr", report.getString("scannerVersion"))
-        assertEquals("Canonical Fast PTS (30s)", report.getString("profileLabel"))
+        assertEquals("Pixel 10 Experimental - LOW RISK - Fast 30s", report.getString("profileLabel"))
         assertEquals(2, report.getJSONArray("transitionMarks").length())
         val firstMark = report.getJSONArray("transitionMarks").getJSONObject(0)
         assertEquals(30_000L, firstMark.getLong("eventBoundaryMs"))
@@ -93,7 +93,7 @@ class CanonicalScannerBridgeTest {
         assertEquals(reason, mapped.strategyFallbackReason)
         assertTrue(report.getBoolean("fallbackUsed"))
         assertEquals(reason, report.getString("failureReason"))
-        assertEquals("Canonical Fast PTS (30s)", report.getString("effectiveProfileLabel"))
+        assertEquals("Pixel 10 Experimental - LOW RISK - Fast 30s", report.getString("effectiveProfileLabel"))
         assertEquals(180_000L, report.getLong("requestedCheckpointIntervalMs"))
         assertEquals(30_000L, report.getLong("effectiveCheckpointIntervalMs"))
     }

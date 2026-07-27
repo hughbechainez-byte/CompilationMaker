@@ -1054,6 +1054,62 @@ class MainActivity : AppCompatActivity() {
             )
             AppLog.i(this@MainActivity, logTag, "Restored output URI=${completed?.outputUri} size=${verified.sizeBytes} durationMs=${verified.durationMs}")
             finalizeCompilationWork(workInfo.id, clearBusy = true)
+            if (terminalState == CompilationPipelineState.SUCCEEDED) {
+                saved?.sourceUri?.takeIf { it.isNotBlank() }?.let { sourceUri ->
+                    showSourceDeletionPrompt(workInfo.id.toString(), Uri.parse(sourceUri))
+                }
+            }
+        }
+    }
+
+    private fun showSourceDeletionPrompt(workId: String, sourceUri: Uri) {
+        AlertDialog.Builder(this)
+            .setTitle("Compilation complete")
+            .setMessage("Delete the original source video now?")
+            .setNegativeButton("Keep") { _, _ ->
+                AppLog.i(this, logTag, "source deletion declined workId=$workId uri=$sourceUri")
+            }
+            .setPositiveButton("Delete") { _, _ ->
+                deleteSourceVideo(workId, sourceUri)
+            }
+            .show()
+    }
+
+    private fun deleteSourceVideo(workId: String, sourceUri: Uri) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val deleted = contentResolver.delete(sourceUri, null, null)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        if (deleted > 0) "Original source deleted" else "Original source was not found",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    AppLog.i(this@MainActivity, logTag, "source deletion result=$deleted workId=$workId uri=$sourceUri")
+                }
+            } catch (security: android.app.RecoverableSecurityException) {
+                withContext(Dispatchers.Main) {
+                    runCatching {
+                        startIntentSenderForResult(
+                            security.userAction.actionIntent.intentSender,
+                            7401,
+                            null,
+                            0,
+                            0,
+                            0,
+                            null
+                        )
+                    }.onFailure {
+                        Toast.makeText(this@MainActivity, "Android could not authorize source deletion", Toast.LENGTH_LONG).show()
+                        AppLog.w(this@MainActivity, logTag, "source deletion authorization failed workId=$workId", it)
+                    }
+                }
+            } catch (security: SecurityException) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@MainActivity, "Source deletion was not authorized", Toast.LENGTH_LONG).show()
+                    AppLog.w(this@MainActivity, logTag, "source deletion denied workId=$workId uri=$sourceUri", security)
+                }
+            }
         }
     }
 
@@ -2654,6 +2710,7 @@ class VideoCompilationEngine(private val context: Context) : AutoCloseable {
         const val EXPORT_TIMEOUT_MS = 30L * 60L * 1000L
         const val OUTPUT_DURATION_TOLERANCE_MS = 2_000L
         const val VERIFY_TIMEOUT_MS = 30_000L
+        const val REQUEST_SOURCE_DELETE_PERMISSION = 7401
     }
 
     suspend fun findNumberTransitionSegments(

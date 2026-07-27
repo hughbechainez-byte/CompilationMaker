@@ -63,7 +63,21 @@ internal class CanonicalScannerBridge(private val context: Context) {
         coreActivity: (CoreActivityEvent) -> Unit = {}
     ): CanonicalScanBridgeResult {
         val profile = canonicalProfileFor(requestedIntervalMs, requestedProfileId)
-        val quickMode = profile == DetectorScanProfile.QUICK_5_MIN
+        val requestedParallelism = profile.requestedRefinementLanes
+        val effectiveParallelism = canonicalEffectiveRefinementParallelism(context, profile)
+        val targetFrameWidthPx = profile.targetFrameWidthPx.coerceAtLeast(64)
+        val fallbackFrameWidthPx = profile.refinementFrameWidthPx
+        val requestedRefinementWidthPx = profile.refinementFrameWidthPx
+        val sampler = if (profile.useKeyframeCoarseSeeking) "closest_sync" else "closest"
+        AppLog.i(
+            context,
+            "CanonicalScannerBridge",
+            "[canonical] profile=$requestedProfileId requested=${profile.name} interval=${profile.checkpointIntervalMs} " +
+                "coarseWidth=$targetFrameWidthPx refineWidth=$requestedRefinementWidthPx " +
+                "requestedLanes=$requestedParallelism effectiveLanes=$effectiveParallelism " +
+                "keyframeOnly=${profile.useKeyframeCoarseSeeking} closestSync=${profile.useClosestSyncForCoarse} " +
+                "retryExact=${profile.retryFailedBracketsWithExact}"
+        )
         val result = CornerNumberTransitionDetector(context).detectWithCoreActivity(
             request = TransitionDetectionRequest(
                 sourceUri = sourceUri,
@@ -74,9 +88,13 @@ internal class CanonicalScannerBridge(private val context: Context) {
                     heightFraction = scanWindow.heightPercent
                 ),
                 profile = profile,
-                targetFrameWidthPx = if (quickMode) CANONICAL_QUICK_MODE_FRAME_WIDTH_PX else 640,
-                fallbackFrameWidthPx = 640,
-                maxParallelRefinements = if (quickMode) canonicalQuickModeParallelism(context) else 1
+                targetFrameWidthPx = targetFrameWidthPx,
+                fallbackFrameWidthPx = fallbackFrameWidthPx,
+                requestedRefinementWidthPx = requestedRefinementWidthPx,
+                maxParallelRefinements = effectiveParallelism,
+                useKeyframeCoarseSeeking = profile.useKeyframeCoarseSeeking,
+                useClosestSyncForCoarse = profile.useClosestSyncForCoarse || targetFrameWidthPx == CANONICAL_QUICK_MODE_FRAME_WIDTH_PX,
+                retryFailedBracketsWithExact = profile.retryFailedBracketsWithExact
             ),
             onProgress = { detectorProgress ->
                 val mapped = mapCanonicalProgress(detectorProgress)
@@ -85,6 +103,15 @@ internal class CanonicalScannerBridge(private val context: Context) {
             onCoreActivity = { event -> coreActivity(event) }
         )
         val plan = mapCanonicalResult(result)
+        AppLog.i(
+            context,
+            "CanonicalScannerBridge",
+            "[canonical] completed profile=${profile.name} requestedProfile=${requestedProfileId ?: profile.name} " +
+                "sampler=$sampler requestedLanes=$requestedParallelism effectiveLanes=$effectiveParallelism " +
+                "coarseWidth=$targetFrameWidthPx refineWidth=$requestedRefinementWidthPx " +
+                "decodedFrames=${result.metrics.decodedFrameCount} ocrCalls=${result.metrics.ocrInferenceCount} " +
+                "checkpointCount=${result.metrics.checkpointCount} transitions=${result.transitions.size}"
+        )
         val reportPath = persistCanonicalReport(context, result, plan)
         return plan.copy(reportPath = reportPath)
     }
@@ -105,14 +132,15 @@ internal fun canonicalProfileFor(
 }
 
 internal fun canonicalProfileLabel(profile: DetectorScanProfile): String = when (profile) {
-    DetectorScanProfile.FAST -> "Canonical Fast PTS (30s)"
-    DetectorScanProfile.MONOTONIC_3_MIN -> "Monotonic Turbo PTS (3m adaptive, persistent 1→N)"
-    DetectorScanProfile.QUICK_5_MIN -> "Experimental Quick Mode (5m adaptive, parallel hardware lanes)"
+    DetectorScanProfile.FAST -> "Pixel 10 Experimental - LOW RISK - Fast 30s"
+    DetectorScanProfile.MONOTONIC_3_MIN -> "Pixel 10 Experimental - MONOTONIC 3m"
+    DetectorScanProfile.QUICK_5_MIN -> "Pixel 10 Experimental - QUICK 5m"
+    DetectorScanProfile.PIXEL_10_MEDIUM_RISK_SUPERFAST_30S -> "Pixel 10 Experimental - MEDIUM RISK - Superfast 30s"
     DetectorScanProfile.BALANCED -> "Canonical Balanced PTS (10s)"
     DetectorScanProfile.PRECISE -> "Canonical Precise PTS (3s)"
 }
 
-internal fun canonicalQuickModeParallelism(context: Context): Int {
+internal fun canonicalAdaptiveRefinementParallelism(context: Context): Int {
     val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
     val thermalSevere = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         val power = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
@@ -126,7 +154,27 @@ internal fun canonicalQuickModeParallelism(context: Context): Int {
     }
 }
 
+internal fun canonicalEffectiveRefinementParallelism(context: Context, profile: DetectorScanProfile): Int {
+    val requested = profile.requestedRefinementLanes.coerceAtLeast(1)
+    if (profile == DetectorScanProfile.MONOTONIC_3_MIN) {
+        return canonicalAdaptiveRefinementParallelism(context).coerceAtMost(requested)
+    }
+    val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+    val thermalSevere = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val power = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        (power?.currentThermalStatus ?: PowerManager.THERMAL_STATUS_NONE) >= PowerManager.THERMAL_STATUS_SEVERE
+    } else false
+    if (thermalSevere) return 1
+    val medium = when {
+        cores >= 8 -> 3
+        cores >= 4 -> 2
+        else -> 1
+    }
+    return minOf(requested, medium)
+}
+
 private const val CANONICAL_QUICK_MODE_FRAME_WIDTH_PX = 384
+private const val CANONICAL_MONOTONIC_FRAME_WIDTH_PX = 640
 
 internal fun mapCanonicalProgress(progress: DetectionProgress): CanonicalScanProgress {
     val state = when (progress.phase) {

@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.30",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.30",
+  "version": "v0.17.31",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.31",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.30/app-release.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.31/app-release.apk"
   },
   "notes": "## Compilation start and logging fix + debug scanner lanes\n\n- Fixes queue attachment and startup path so compilation can begin consistently after enqueue, and re-enables crash log persistence from app launch.\n- Exposes low-risk and medium-risk experimental pixel scanners as explicit scan profile options and keeps existing stable/exact profiles for production use.\n- No API/manifest behavior changes.",
   "updates": [
+    {
+      "version": "v0.17.31",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.31",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.31/app-release.apk",
+      "notes": "## Corrected CompilationMaker build\n\n- Corrects requested scanner-profile completion logging.\n- Adds an explicit post-success source deletion prompt with Android recoverable-permission handling.\n- Keeps output verification and persisted compilation results as release gates."
+    },
     {
       "version": "v0.17.30",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.30",
