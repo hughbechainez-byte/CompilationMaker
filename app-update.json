@@ -1,16 +1,22 @@
 {
-  "version": "v0.17.30",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.30",
+  "version": "v0.17.31",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.31",
   "apk": {
     "url": ""
   },
-  "notes": "## Compilation start and logging fix + debug scanner lanes\n\n- Fixes queue attachment/startup wiring so compilation can begin consistently after enqueue.\n- Re-enables crash log persistence at app launch via crash-recorder install.\n- Adds explicit Low/Medium-risk pixel scanner labels in the scan profile list while keeping existing production/stable/export paths.",
+  "notes": "Corrected scanner build with explicit Pixel 10 profiles, accurate profile logging, and post-success source deletion handling.",
   "updates": [
+    {
+      "version": "v0.17.31",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.31",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.31/app-release.apk",
+      "notes": "Corrected scanner build with explicit Pixel 10 profiles, accurate profile logging, and post-success source deletion handling."
+    },
     {
       "version": "v0.17.30",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.30",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.30/app-release.apk",
-      "notes": "## Compilation start and logging fix + debug scanner lanes\n\n- Fixes queue attachment/startup wiring so compilation can begin consistently after enqueue.\n- Re-enables crash log persistence at app launch via crash-recorder install.\n- Adds explicit Low/Medium-risk pixel scanner labels in the scan profile list while keeping existing production/stable/export paths."
+      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.28...v0.17.30"
     },
     {
       "version": "v0.17.28",
@@ -119,12 +125,6 @@
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.11",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.11/CompilationMaker-v0.17.11.apk",
       "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.10...v0.17.11"
-    },
-    {
-      "version": "v0.17.10",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.10",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.10/CompilationMaker-v0.17.10.apk",
-      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.9...v0.17.10"
     }
   ]
 }
