@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.31",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.31",
+  "version": "v0.17.32",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.32",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.31/app-release.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.32/app-release.apk"
   },
   "notes": "## Compilation start and logging fix + debug scanner lanes\n\n- Fixes queue attachment and startup path so compilation can begin consistently after enqueue, and re-enables crash log persistence from app launch.\n- Exposes low-risk and medium-risk experimental pixel scanners as explicit scan profile options and keeps existing stable/exact profiles for production use.\n- No API/manifest behavior changes.",
   "updates": [
+    {
+      "version": "v0.17.32",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.32",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.32/app-release.apk",
+      "notes": "## Faster 30-second scanner\n\n- Restores keyframe-only coarse seeks for the explicit low-risk 30-second profile.\n- Keeps exact presentation-time refinement on closest-frame seeks for PTS correctness."
+    },
     {
       "version": "v0.17.31",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.31",

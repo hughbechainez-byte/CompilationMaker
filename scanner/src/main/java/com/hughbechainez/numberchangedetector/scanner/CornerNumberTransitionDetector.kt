@@ -111,7 +111,8 @@ class CornerNumberTransitionDetector(
                     val frame = lane.sampler.frameAt(
                         safeTime,
                         lane.targetFrameWidthPx,
-                        exactPresentationTime
+                        exactPresentationTime,
+                        keyframeOnly = request.useKeyframeCoarseSeeking && !exactPresentationTime
                     )
                         ?: return DigitEvidence(
                             requestedTimeMs = safeTime,
