@@ -224,23 +224,52 @@ class CornerNumberTransitionDetector(
                     lane: RecognitionLane = primaryLane
                 ): List<StatePoint> {
                     val times = generateCheckpointTimestamps(metadata.durationMs, intervalMs)
-                    return times.mapIndexed { index, timeMs ->
-                        val evidence = recognizeWithLane(
-                            lane,
-                            timeMs,
-                            exactPresentationTime = false,
-                            aggressive = true
-                        )
-                        val percent = progressStart +
-                            ((index + 1) * progressSpan / times.size.coerceAtLeast(1))
-                        onProgress(
-                            DetectionProgress(
-                                "coarse_scan",
-                                "$label ${index + 1}/${times.size} at ${formatTimestampMs(timeMs)}: ${evidence.parsedNumber ?: "none"}",
-                                percent.coerceIn(0, 98)
+                    if (times.isEmpty()) return emptyList()
+                    val laneCount = request.maxParallelRefinements.coerceIn(1, min(3, times.size))
+                    val lanes = ArrayList<RecognitionLane>(laneCount).apply {
+                        add(lane)
+                        repeat(laneCount - 1) {
+                            add(
+                                RecognitionLane(
+                                    sampler = samplerFactory(request.sourceUri),
+                                    recognizer = recognizerFactory(),
+                                    targetFrameWidthPx = lane.targetFrameWidthPx
+                                )
                             )
-                        )
-                        StatePoint(timeMs, evidence.parsedNumber, evidence)
+                        }
+                    }
+                    val completed = AtomicInteger(0)
+                    return try {
+                        val ordered = coroutineScope {
+                            lanes.mapIndexed { laneIndex, workerLane ->
+                                async(Dispatchers.Default) {
+                                    times.withIndex()
+                                        .filter { it.index % laneCount == laneIndex }
+                                        .map { indexed ->
+                                            currentCoroutineContext().ensureActive()
+                                            val evidence = recognizeWithLane(
+                                                workerLane,
+                                                indexed.value,
+                                                exactPresentationTime = false,
+                                                aggressive = true
+                                            )
+                                            val done = completed.incrementAndGet()
+                                            onProgress(
+                                                DetectionProgress(
+                                                    "coarse_scan",
+                                                    "$label $done/${times.size} at ${formatTimestampMs(indexed.value)}: ${evidence.parsedNumber ?: "none"}",
+                                                    (progressStart + done * progressSpan / times.size).coerceIn(0, 98)
+                                                )
+                                            )
+                                            indexed.index to StatePoint(indexed.value, evidence.parsedNumber, evidence)
+                                        }
+                                }
+                            }.awaitAll().flatten().sortedBy { it.first }.map { it.second }
+                        }
+                        lanes.filter { it !== lane }.forEach { extra -> lane.coarseCache.putAll(extra.coarseCache) }
+                        ordered
+                    } finally {
+                        lanes.filter { it !== lane }.forEach(RecognitionLane::close)
                     }
                 }
 
