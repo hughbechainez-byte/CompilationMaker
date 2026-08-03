@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.33",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.33",
+  "version": "v0.17.34",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.34",
   "apk": {
     "url": ""
   },
-  "notes": "Faster 30-second scanner and refinement: bounded parallel coarse checkpoint lanes, cache reuse, keyframe-only coarse seeks, and closest-frame exact PTS refinement.",
+  "notes": "Batch compilation, richer PiP status, and compiled/original review with explicit deletion consent.",
   "updates": [
+    {
+      "version": "v0.17.34",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.34",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.34/app-release.apk",
+      "notes": "Batch compilation, richer PiP status, and compiled/original review with explicit deletion consent."
+    },
     {
       "version": "v0.17.33",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.33",
@@ -119,12 +125,6 @@
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.14",
       "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.14/CompilationMaker-v0.17.14.apk",
       "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.13...v0.17.14"
-    },
-    {
-      "version": "v0.17.13",
-      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.13",
-      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.13/CompilationMaker-v0.17.13.apk",
-      "notes": "Test build. The signing certificate was rotated; installations signed by the old certificate must uninstall and reinstall before installing this release.\n**Full Changelog**: https://github.com/hughbechainez-byte/CompilationMaker/compare/v0.17.12...v0.17.13"
     }
   ]
 }
