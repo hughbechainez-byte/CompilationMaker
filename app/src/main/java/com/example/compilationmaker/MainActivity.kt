@@ -56,6 +56,7 @@ import android.widget.SeekBar
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.VideoView
@@ -76,6 +77,7 @@ import androidx.work.Data
 import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
+import androidx.work.WorkContinuation
 import androidx.work.WorkManager
 import com.example.compilationmaker.databinding.ActivityMainBinding
 import com.google.mlkit.vision.common.InputImage
@@ -83,6 +85,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -115,6 +118,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private var selectedVideoUri: Uri? = null
+    private var selectedBatchUris: List<Uri> = emptyList()
     private var isBusy = false
     private var isScrubbing = false
     private val statusFeedLines = ArrayDeque<String>()
@@ -173,6 +177,27 @@ class MainActivity : AppCompatActivity() {
             onVideoSelected(picked)
         }
 
+    private val batchVideoPickerLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result: ActivityResult ->
+            if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+            val data = result.data ?: return@registerForActivityResult
+            val picked = buildList {
+                data.data?.let(::add)
+                data.clipData?.let { clip ->
+                    for (index in 0 until clip.itemCount) add(clip.getItemAt(index).uri)
+                }
+            }.distinct()
+            if (picked.isEmpty()) return@registerForActivityResult
+            picked.forEach { uri ->
+                runCatching {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+            }
+            selectedBatchUris = picked
+            binding.batchSelectionText.text = "Batch queue: ${picked.size} videos selected"
+            emitTransientStatus("${picked.size} videos ready for batch compilation")
+        }
+
     private fun onVideoSelected(picked: Uri) {
         if (hasActiveCompilation()) {
             emitTransientStatus("A compilation is already active. Reopen it instead of selecting another video.")
@@ -202,7 +227,98 @@ class MainActivity : AppCompatActivity() {
         videoPickerLauncher.launch(baseIntent)
     }
 
+    private fun launchBatchVideoPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "video/*"
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+        }
+        batchVideoPickerLauncher.launch(intent)
+    }
+
+    private fun showCompiledOriginalReview() {
+        lifecycleScope.launch {
+            val matches = withContext(Dispatchers.IO) { queryCompiledOriginalMatches() }
+            if (matches.isEmpty()) {
+                emitTransientStatus("No likely compiled/original video pairs were found")
+                return@launch
+            }
+            val labels = matches.map { "${it.original.displayName}  ->  ${it.compiled.displayName}" }.toTypedArray()
+            val checked = BooleanArray(matches.size) { true }
+            val content = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(24, 8, 24, 0)
+            }
+            matches.take(12).forEach { match ->
+                val row = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutParams = LinearLayout.LayoutParams(-1, 150)
+                }
+                row.addView(VideoView(this@MainActivity).apply {
+                    setVideoURI(match.original.uri)
+                    layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+                })
+                row.addView(VideoView(this@MainActivity).apply {
+                    setVideoURI(match.compiled.uri)
+                    layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+                })
+                content.addView(TextView(this@MainActivity).apply { text = "${match.original.displayName}  |  ${match.compiled.displayName}" })
+                content.addView(row)
+            }
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("Likely compiled originals (${matches.size})")
+                .setMessage("Side-by-side previews are shown below. Select the pairs whose originals you want removed.")
+                .setMultiChoiceItems(labels, checked) { _, which, isChecked -> checked[which] = isChecked }
+                .setView(content)
+                .setNegativeButton("Keep originals", null)
+                .setPositiveButton("Delete selected originals") { _, _ ->
+                    matches.filterIndexed { index, _ -> checked[index] }.forEach { match ->
+                        deleteSourceVideo("detected:${match.compiled.uri}", match.original.uri)
+                    }
+                }
+                .show()
+        }
+    }
+
+    private fun queryCompiledOriginalMatches(): List<CompiledVideoMatch> {
+        val projection = arrayOf(
+            MediaStore.Video.Media._ID,
+            MediaStore.Video.Media.DISPLAY_NAME,
+            MediaStore.Video.Media.RELATIVE_PATH,
+            MediaStore.Video.Media.SIZE,
+            MediaStore.Video.Media.DURATION
+        )
+        val videos = contentResolver.query(
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            projection,
+            null,
+            null,
+            "${MediaStore.Video.Media.DATE_ADDED} DESC"
+        )?.use { cursor ->
+            val id = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
+            val name = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+            val path = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.RELATIVE_PATH)
+            val size = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
+            val duration = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
+            val entries = ArrayList<MediaVideoEntry>()
+            while (cursor.moveToNext()) {
+                entries += MediaVideoEntry(
+                    uri = Uri.withAppendedPath(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cursor.getLong(id).toString()),
+                    displayName = cursor.getString(name).orEmpty(),
+                    relativePath = cursor.getString(path).orEmpty(),
+                    sizeBytes = cursor.getLong(size),
+                    durationMs = cursor.getLong(duration)
+                )
+            }
+            entries
+        }.orEmpty()
+        return detectCompiledVideoMatches(videos)
+    }
+
     private lateinit var qualitySpinner: Spinner
+    private lateinit var batchSelectionText: TextView
+    private lateinit var detectCompiledButton: Button
     private lateinit var formatSpinner: Spinner
     private lateinit var scanSpeedSpinner: Spinner
     private lateinit var videoPreview: VideoView
@@ -289,11 +405,22 @@ class MainActivity : AppCompatActivity() {
         if (hasActiveCompilation() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !isInPictureInPictureMode) {
             val params = PictureInPictureParams.Builder()
                 .setAspectRatio(Rational(16, 9))
+                .apply {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        setTitle("CompilationMaker")
+                        setSubtitle(pipStatusText())
+                    }
+                }
                 .build()
             runCatching { enterPictureInPictureMode(params) }
                 .onFailure { AppLog.w(this, logTag, "Could not enter background status picture-in-picture", it) }
         }
         super.onUserLeaveHint()
+    }
+
+    private fun pipStatusText(): String {
+        val record = compilationJobStore.load()
+        return "${record?.progressPercent ?: 0}% ${record?.stage ?: currentPipelineState.name.lowercase()}"
     }
 
     override fun onResume() {
@@ -314,6 +441,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun setUpUi() {
         qualitySpinner = binding.qualityPicker
+        batchSelectionText = binding.batchSelectionText
+        detectCompiledButton = binding.detectCompiledButton
         formatSpinner = binding.formatPicker
         scanSpeedSpinner = binding.scanSpeedPicker
         transitionStyleSpinner = binding.transitionStylePicker
@@ -353,6 +482,8 @@ class MainActivity : AppCompatActivity() {
         binding.selectButton.setOnClickListener {
             launchVideoPicker()
         }
+        binding.batchSelectButton.setOnClickListener { launchBatchVideoPicker() }
+        detectCompiledButton.setOnClickListener { showCompiledOriginalReview() }
 
         previewSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
@@ -577,6 +708,15 @@ class MainActivity : AppCompatActivity() {
 
         binding.processButton.setOnClickListener {
             if (isBusy || compilationStartInFlight) return@setOnClickListener
+            if (selectedBatchUris.size > 1) {
+                val quality = qualityOptions[qualitySpinner.selectedItemPosition]
+                val format = formatOptions[formatSpinner.selectedItemPosition]
+                val transitionStyle = transitionStyleOptions[transitionStyleSpinner.selectedItemPosition.coerceIn(0, transitionStyleOptions.lastIndex)]
+                compilationStartInFlight = true
+                setUiBusy(true)
+                startBatchCompilation(selectedBatchUris, quality, format, transitionStyle)
+                return@setOnClickListener
+            }
             val source = selectedVideoUri
             if (source == null) {
                 Toast.makeText(this, "Pick a video first", Toast.LENGTH_SHORT).show()
@@ -872,6 +1012,101 @@ class MainActivity : AppCompatActivity() {
         )
         attachToCompilationWork(accepted, compilationJobStore.load())
     }
+
+    private fun startBatchCompilation(
+        uris: List<Uri>,
+        quality: ExportQuality,
+        format: ExportFormat,
+        transitionStyle: TransitionStyle
+    ) {
+        lifecycleScope.launch {
+            try {
+                val scanProfile = selectedCheckpointProfile()
+                val scanMode = if (experimentalModeSwitch.isChecked) ScanMode.Experimental else scanProfile.mode
+                val scanWindowJson = JSONObject().apply {
+                    put("xPercent", selectedScanWindow.xPercent)
+                    put("yPercent", selectedScanWindow.yPercent)
+                    put("widthPercent", selectedScanWindow.widthPercent)
+                    put("heightPercent", selectedScanWindow.heightPercent)
+                }.toString()
+                val workItems = uris.map { uri ->
+                    val output = createExpectedCompilationOutput(format)
+                    val input = Data.Builder()
+                        .putString(CompilationWorker.KEY_SOURCE_URI, uri.toString())
+                        .putString(CompilationWorker.KEY_SCAN_WINDOW, scanWindowJson)
+                        .putInt(CompilationWorker.KEY_SCAN_MODE, scanMode.ordinal)
+                        .putLong(CompilationWorker.KEY_CHECKPOINT_INTERVAL_MS, scanProfile.frameStepMs)
+                        .putString(CompilationWorker.KEY_SCANNER_PROFILE_ID, scanProfile.scannerProfileId)
+                        .putInt(CompilationWorker.KEY_EXPERIMENTAL_DOWNSCALE, selectedExperimentalDownscaleSize())
+                        .putInt(CompilationWorker.KEY_QUALITY_ORDINAL, quality.ordinal)
+                        .putInt(CompilationWorker.KEY_FORMAT_ORDINAL, format.ordinal)
+                        .putInt(CompilationWorker.KEY_TRANSITION_STYLE_ORDINAL, transitionStyle.ordinal)
+                        .putInt(CompilationWorker.KEY_VIDEO_ROTATION, 0)
+                        .putString(CompilationJobContract.KEY_EXPECTED_OUTPUT_PATH, output.absolutePath)
+                        .build()
+                    BatchWorkItem(uri, output, OneTimeWorkRequestBuilder<CompilationWorker>().setInputData(input).build())
+                }
+                val batchName = "compilation_batch_${System.currentTimeMillis()}"
+                var continuation: WorkContinuation = workManager.beginUniqueWork(
+                    batchName,
+                    ExistingWorkPolicy.REPLACE,
+                    workItems.first().request
+                )
+                workItems.drop(1).forEach { item -> continuation = continuation.then(item.request) }
+                withContext(Dispatchers.IO) { continuation.enqueue().result.get() }
+                emitCompilationProgress("Batch queued: ${workItems.size} videos", 0)
+                pollBatchCompilation(batchName, workItems)
+            } catch (failure: Exception) {
+                recordHandledWorkerFailure(this@MainActivity, logTag, "Batch compilation enqueue failed", failure)
+                emitCompilationProgress("Batch queue failed: ${failure.message ?: failure::class.java.simpleName}", 100)
+                setUiBusy(false)
+                isBusy = false
+                compilationStartInFlight = false
+            }
+        }
+    }
+
+    private suspend fun pollBatchCompilation(batchName: String, items: List<BatchWorkItem>) {
+        var finished = 0
+        while (finished < items.size && currentCoroutineContext().isActive) {
+            val states = withContext(Dispatchers.IO) { workManager.getWorkInfosForUniqueWork(batchName).get() }
+            states.forEach { info ->
+                val item = items.firstOrNull { it.request.id == info.id } ?: return@forEach
+                when (info.state) {
+                    WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> {
+                        emitCompilationProgress("Batch ${items.indexOf(item) + 1}/${items.size}: ${info.state.name.lowercase()}", (finished * 100 / items.size).coerceIn(0, 99))
+                    }
+                    WorkInfo.State.SUCCEEDED -> {
+                        if (!item.reported) {
+                            item.reported = true
+                            finished++
+                            emitCompilationProgress("Batch ${finished}/${items.size}: compilation finished", (finished * 100 / items.size).coerceIn(0, 100))
+                            showSourceDeletionPrompt(info.id.toString(), item.sourceUri)
+                        }
+                    }
+                    WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
+                        if (!item.reported) {
+                            item.reported = true
+                            finished++
+                            emitCompilationProgress("Batch ${finished}/${items.size}: ${info.state.name.lowercase()}", (finished * 100 / items.size).coerceIn(0, 100))
+                        }
+                    }
+                }
+            }
+            delay(750L)
+        }
+        emitCompilationProgress("Batch complete: ${items.size} videos processed", 100)
+        setUiBusy(false)
+        isBusy = false
+        compilationStartInFlight = false
+    }
+
+    private data class BatchWorkItem(
+        val sourceUri: Uri,
+        val output: File,
+        val request: OneTimeWorkRequest,
+        var reported: Boolean = false
+    )
 
     private val selectedScanWindow: ScanWindow
         get() = readScanWindow()

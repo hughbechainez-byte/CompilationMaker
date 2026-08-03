@@ -44,6 +44,28 @@
             android:layout_marginTop="20dp"
             android:text="Select Video" />
 
+        <Button
+            android:id="@+id/batchSelectButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="Select Videos for Batch" />
+
+        <TextView
+            android:id="@+id/batchSelectionText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="4dp"
+            android:text="Batch queue: none"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/detectCompiledButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="Find Compiled Videos and Originals" />
+
         <TextView
             android:id="@+id/selectedVideo"
             android:layout_width="match_parent"

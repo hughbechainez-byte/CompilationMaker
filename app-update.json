@@ -1,11 +1,17 @@
 {
-  "version": "v0.17.33",
-  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.33",
+  "version": "v0.17.34",
+  "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.34",
   "apk": {
-    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.33/app-release.apk"
+    "url": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.34/app-release.apk"
   },
   "notes": "## Compilation start and logging fix + debug scanner lanes\n\n- Fixes queue attachment and startup path so compilation can begin consistently after enqueue, and re-enables crash log persistence from app launch.\n- Exposes low-risk and medium-risk experimental pixel scanners as explicit scan profile options and keeps existing stable/exact profiles for production use.\n- No API/manifest behavior changes.",
   "updates": [
+    {
+      "version": "v0.17.34",
+      "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.34",
+      "apkUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/download/v0.17.34/app-release.apk",
+      "notes": "## Batch compilation and cleanup review\n\n- Select and compile multiple videos sequentially with per-video progress.\n- Adds PiP title/subtitle status.\n- Detects likely compiled/original pairs, shows side-by-side previews, and asks before deleting originals."
+    },
     {
       "version": "v0.17.33",
       "releaseUrl": "https://github.com/hughbechainez-byte/CompilationMaker/releases/tag/v0.17.33",
